@@ -2,6 +2,7 @@
 # 사용법 1) 웹앱: streamlit run ga4_media_auto_aggregator.py
 # 사용법 2) CLI:  python ga4_media_auto_aggregator.py 총사용자파일.csv 세션수파일.csv 결과.xlsx
 
+import re
 import sys
 from io import BytesIO
 from pathlib import Path
@@ -115,10 +116,12 @@ def auto_detect_files(df1: pd.DataFrame, df2: pd.DataFrame):
     raise ValueError("두 파일 중 하나에는 '총 사용자', 다른 하나에는 '세션수' 컬럼이 있어야 합니다.")
 
 
-def exact_not_excluded_mask(df: pd.DataFrame) -> pd.Series:
-    """세션 소스/매체에 제외 키워드가 포함된 행 제거."""
+def exact_not_excluded_mask(df: pd.DataFrame, keywords: list[str]) -> pd.Series:
+    """세션 소스/매체에 제외 키워드가 포함된 행 제거. keywords가 비어있으면 전체 허용."""
+    if not keywords:
+        return pd.Series(True, index=df.index)
     source_medium = df["세션 소스/매체"].fillna("").astype(str).str.lower()
-    pattern = "|".join(EXCLUDE_SOURCE_MEDIUM_KEYWORDS)
+    pattern = "|".join(re.escape(k) for k in keywords)
     return ~source_medium.str.contains(pattern, regex=True)
 
 
@@ -207,6 +210,7 @@ def aggregate_ga4(
     channel_mask_func,
     classify_func,
     order: list[str],
+    exclude_keywords: list[str] = EXCLUDE_SOURCE_MEDIUM_KEYWORDS,
 ) -> pd.DataFrame:
     """
     총사용자: 총 사용자 파일에서 이벤트 이름 = session_start 행만 사용
@@ -219,13 +223,13 @@ def aggregate_ga4(
 
     user_base = total_user_df[
         channel_mask_func(total_user_df)
-        & exact_not_excluded_mask(total_user_df)
+        & exact_not_excluded_mask(total_user_df, exclude_keywords)
         & total_user_df["이벤트 이름"].str.lower().eq("session_start")
     ].copy()
 
     metric_base = metric_df[
         channel_mask_func(metric_df)
-        & exact_not_excluded_mask(metric_df)
+        & exact_not_excluded_mask(metric_df, exclude_keywords)
     ].copy()
 
     user_base["구분"] = user_base["세션 소스/매체"].apply(classify_func)
@@ -267,31 +271,38 @@ def aggregate_ga4(
     return result
 
 
-def make_result(total_user_df: pd.DataFrame, metric_df: pd.DataFrame) -> dict[str, pd.DataFrame]:
+def make_result(
+    total_user_df: pd.DataFrame,
+    metric_df: pd.DataFrame,
+    exclude_keywords: list[str] = EXCLUDE_SOURCE_MEDIUM_KEYWORDS,
+) -> dict[str, pd.DataFrame]:
     total_user_df, metric_df = auto_detect_files(
         normalize_df(total_user_df),
         normalize_df(metric_df),
     )
 
-    organic_result = aggregate_ga4(
+    kwargs = dict(
         total_user_df=total_user_df,
         metric_df=metric_df,
+        exclude_keywords=exclude_keywords,
+    )
+
+    organic_result = aggregate_ga4(
+        **kwargs,
         channel_mask_func=organic_channel_mask,
         classify_func=classify_organic,
         order=ORGANIC_ORDER,
     )
 
     referral_result = aggregate_ga4(
-        total_user_df=total_user_df,
-        metric_df=metric_df,
+        **kwargs,
         channel_mask_func=referral_channel_mask,
         classify_func=classify_referral,
         order=REFERRAL_ORDER,
     )
 
     ai_search_result = aggregate_ga4(
-        total_user_df=total_user_df,
-        metric_df=metric_df,
+        **kwargs,
         channel_mask_func=ai_search_channel_mask,
         classify_func=classify_ai_search,
         order=AI_SEARCH_ORDER,
@@ -347,6 +358,20 @@ def run_streamlit():
         "CSV 2개를 업로드하면 Organic Search와 Referral/Organic Social/Unassigned 기준을 자동 집계합니다."
     )
 
+    with st.expander("세션 소스/매체 제외 필터 설정", expanded=False):
+        use_filter = st.checkbox("제외 필터 사용", value=True)
+        raw_input = st.text_area(
+            "제외 키워드 (한 줄에 하나씩 입력)",
+            value="\n".join(EXCLUDE_SOURCE_MEDIUM_KEYWORDS),
+            height=120,
+            disabled=not use_filter,
+            help="세션 소스/매체에 해당 키워드가 포함된 행을 제외합니다.",
+        )
+        if use_filter:
+            exclude_keywords = [k.strip() for k in raw_input.splitlines() if k.strip()]
+        else:
+            exclude_keywords = []
+
     uploaded_files = st.file_uploader(
         "총 사용자 CSV와 세션수 CSV 2개를 업로드하세요.",
         type=["csv"],
@@ -364,7 +389,7 @@ def run_streamlit():
         df1 = read_csv_safely(uploaded_files[0])
         df2 = read_csv_safely(uploaded_files[1])
 
-        results = make_result(df1, df2)
+        results = make_result(df1, df2, exclude_keywords=exclude_keywords)
 
         st.subheader("Organic Search")
         st.dataframe(results["Organic Search"], use_container_width=True)
