@@ -41,6 +41,7 @@ REQUIRED_BASE_COLS = ["세션 기본 채널 그룹", "세션 소스/매체", "�
 
 ORGANIC_ORDER = ["Google", "Naver", "Daum", "Bing", "그외"]
 REFERRAL_ORDER = ["KT·자사", "네이버", "커뮤니티·콘텐츠", "카카오", "그외"]
+AI_SEARCH_ORDER = ["Gemini", "GPT", "Perplexity"]
 
 
 # 2) Referral 매체 분류 기준
@@ -149,6 +150,25 @@ def organic_channel_mask(df: pd.DataFrame) -> pd.Series:
 def referral_channel_mask(df: pd.DataFrame) -> pd.Series:
     allowed = {"referral", "organic social", "unassigned"}
     return df["세션 기본 채널 그룹"].str.lower().isin(allowed)
+
+
+def ai_search_channel_mask(df: pd.DataFrame) -> pd.Series:
+    return (
+        df["세션 소스/매체"]
+        .fillna("").astype(str).str.lower()
+        .str.contains(r"gemini|gpt|perplexity", regex=True)
+    )
+
+
+def classify_ai_search(source_medium: str) -> str:
+    s = str(source_medium).lower()
+    if "gemini" in s:
+        return "Gemini"
+    if "gpt" in s:
+        return "GPT"
+    if "perplexity" in s:
+        return "Perplexity"
+    return "그외"
 
 
 def classify_organic(source_medium: str) -> str:
@@ -290,9 +310,18 @@ def make_result(total_user_df: pd.DataFrame, metric_df: pd.DataFrame) -> dict[st
         order=REFERRAL_ORDER,
     )
 
+    ai_search_result = aggregate_ga4(
+        total_user_df=total_user_df,
+        metric_df=metric_df,
+        channel_mask_func=ai_search_channel_mask,
+        classify_func=classify_ai_search,
+        order=AI_SEARCH_ORDER,
+    )
+
     return {
         "Organic Search": organic_result,
         "Referral_OS_Unassigned": referral_result,
+        "AI Search": ai_search_result,
     }
 
 
@@ -363,6 +392,10 @@ def run_streamlit():
 
         st.subheader("Referral / Organic Social / Unassigned")
         st.dataframe(results["Referral_OS_Unassigned"], use_container_width=True)
+
+        st.subheader("AI Search (Gemini / GPT / Perplexity)")
+        st.caption("세션 소스/매체에 gemini·gpt·perplexity 포함된 행 기준")
+        st.dataframe(results["AI Search"], use_container_width=True)
 
         excel_bytes = to_excel_bytes(results)
         st.download_button(
