@@ -9,32 +9,11 @@ from pathlib import Path
 import pandas as pd
 
 
-# 1) 공통 제외 기준: Organic Search / Referral 계열 모두 동일하게 적용
-EXCLUDE_SOURCE_MEDIUMS = [
-    "twitter / twitter_ppl",
-    "tt / tt_ppl",
-    "tstory_blog / blog_ppl",
-    "threads / threads_ppl",
-    "naver_officialcafe / noticepost",
-    "naver_gfa / (not set)",
-    "naver_blog / blog_ppl",
-    "naver / powercontents_noticepost",
-    "naver / powercontents",
-    "naver / newproduct",
-    "naver / gfa",
-    "naver / brandsearch",
-    "meta / display_rt",
-    "kakao / video",
-    "kakao / native",
-    "daum / brandsearch",
-    "crm / lms",
-    "bit.ly / blog_ppl",
-    "(not set) / blog_ppl",
-    "naver.com / powercontents",
-    "m.blog.naver.com / powercontents",
-    "naver_blog / noticepost",
-    "naver / noticepost",
-    "m.blog.naver.com / blog_ppl",
+# 1) 공통 제외 기준: 세션 소스/매체에 아래 키워드가 포함된 행 제외
+EXCLUDE_SOURCE_MEDIUM_KEYWORDS = [
+    "brandsearch",
+    "powercontents",
+    "newproduct",
 ]
 
 REQUIRED_BASE_COLS = ["세션 기본 채널 그룹", "세션 소스/매체", "이벤트 이름"]
@@ -137,10 +116,10 @@ def auto_detect_files(df1: pd.DataFrame, df2: pd.DataFrame):
 
 
 def exact_not_excluded_mask(df: pd.DataFrame) -> pd.Series:
-    """세션 소스/매체 NOT IN 제외 기준."""
-    excludes = {x.lower().strip() for x in EXCLUDE_SOURCE_MEDIUMS}
-    source_medium = df["세션 소스/매체"].fillna("").astype(str).str.lower().str.strip()
-    return ~source_medium.isin(excludes)
+    """세션 소스/매체에 제외 키워드가 포함된 행 제거."""
+    source_medium = df["세션 소스/매체"].fillna("").astype(str).str.lower()
+    pattern = "|".join(EXCLUDE_SOURCE_MEDIUM_KEYWORDS)
+    return ~source_medium.str.contains(pattern, regex=True)
 
 
 def organic_channel_mask(df: pd.DataFrame) -> pd.Series:
