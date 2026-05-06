@@ -41,7 +41,7 @@ REQUIRED_BASE_COLS = ["세션 기본 채널 그룹", "세션 소스/매체", "�
 
 ORGANIC_ORDER = ["Google", "Naver", "Daum", "Bing", "그외"]
 REFERRAL_ORDER = ["KT·자사", "네이버", "커뮤니티·콘텐츠", "카카오", "그외"]
-AI_SEARCH_ORDER = ["Gemini", "GPT", "Perplexity"]
+AI_SEARCH_ORDER = ["ChatGPT", "Gemini", "Perplexity"]
 
 
 # 2) Referral 매체 분류 기준
@@ -165,7 +165,7 @@ def classify_ai_search(source_medium: str) -> str:
     if "gemini" in s:
         return "Gemini"
     if "gpt" in s:
-        return "GPT"
+        return "ChatGPT"
     if "perplexity" in s:
         return "Perplexity"
     return "그외"
