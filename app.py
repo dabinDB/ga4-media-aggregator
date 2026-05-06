@@ -348,6 +348,31 @@ def run_cli():
         print(df.to_string(index=False))
 
 
+def copy_button(df: pd.DataFrame, key: str):
+    import streamlit.components.v1 as components
+
+    tsv = df.to_csv(index=False, sep="\t")
+    escaped = tsv.replace("`", "\\`")
+    components.html(
+        f"""
+        <button onclick="
+            navigator.clipboard.writeText(`{escaped}`).then(() => {{
+                this.textContent = '✅ 복사됨';
+                setTimeout(() => this.textContent = '📋 클립보드 복사 (엑셀 붙여넣기용)', 2000);
+            }});
+        " style="
+            padding: 6px 14px;
+            font-size: 13px;
+            cursor: pointer;
+            border: 1px solid #ccc;
+            border-radius: 6px;
+            background: #f8f9fa;
+        ">📋 클립보드 복사 (엑셀 붙여넣기용)</button>
+        """,
+        height=40,
+    )
+
+
 def run_streamlit():
     import streamlit as st
 
@@ -393,13 +418,16 @@ def run_streamlit():
 
         st.subheader("Organic Search")
         st.dataframe(results["Organic Search"], use_container_width=True)
+        copy_button(results["Organic Search"], key="organic")
 
         st.subheader("Referral / Organic Social / Unassigned")
         st.dataframe(results["Referral_OS_Unassigned"], use_container_width=True)
+        copy_button(results["Referral_OS_Unassigned"], key="referral")
 
         st.subheader("AI Search (Gemini / GPT / Perplexity)")
         st.caption("세션 소스/매체에 gemini·gpt·perplexity 포함된 행 기준")
         st.dataframe(results["AI Search"], use_container_width=True)
+        copy_button(results["AI Search"], key="ai")
 
         excel_bytes = to_excel_bytes(results)
         st.download_button(
