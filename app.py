@@ -398,7 +398,7 @@ def run_streamlit():
             exclude_keywords = []
 
     uploaded_files = st.file_uploader(
-        "총 사용자 CSV와 세션수 CSV 2개를 업로드하세요.",
+        "총 사용자 CSV + 세션수 CSV를 날짜별로 여러 쌍 업로드하세요. (2개 단위, 짝수개)",
         type=["csv"],
         accept_multiple_files=True,
     )
@@ -406,15 +406,36 @@ def run_streamlit():
     if not uploaded_files:
         return
 
-    if len(uploaded_files) != 2:
-        st.warning("CSV 파일은 정확히 2개를 업로드해야 합니다.")
+    if len(uploaded_files) % 2 != 0:
+        st.warning(f"파일은 짝수개(2, 4, 6…)로 업로드해야 합니다. 현재: {len(uploaded_files)}개")
         return
 
     try:
-        df1 = read_csv_safely(uploaded_files[0])
-        df2 = read_csv_safely(uploaded_files[1])
+        dfs = [read_csv_safely(f) for f in uploaded_files]
 
-        results = make_result(df1, df2, exclude_keywords=exclude_keywords)
+        # 각 파일을 총사용자/세션수로 분류 후 각각 합산
+        user_dfs, metric_dfs = [], []
+        for df in dfs:
+            cols = set(df.columns)
+            if "총 사용자" in cols:
+                user_dfs.append(df)
+            elif "세션수" in cols:
+                metric_dfs.append(df)
+            else:
+                raise ValueError(f"'총 사용자' 또는 '세션수' 컬럼이 없는 파일이 포함되어 있습니다.")
+
+        if not user_dfs:
+            raise ValueError("'총 사용자' 컬럼이 있는 파일이 없습니다.")
+        if not metric_dfs:
+            raise ValueError("'세션수' 컬럼이 있는 파일이 없습니다.")
+
+        combined_user_df = pd.concat(user_dfs, ignore_index=True)
+        combined_metric_df = pd.concat(metric_dfs, ignore_index=True)
+
+        pair_info = f"총사용자 파일 {len(user_dfs)}개 · 세션수 파일 {len(metric_dfs)}개 합산"
+        st.info(f"📂 {pair_info}")
+
+        results = make_result(combined_user_df, combined_metric_df, exclude_keywords=exclude_keywords)
 
         st.subheader("Organic Search")
         st.dataframe(results["Organic Search"], use_container_width=True)
