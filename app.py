@@ -348,6 +348,57 @@ def run_cli():
         print(df.to_string(index=False))
 
 
+def copy_8rows_button(organic_df: pd.DataFrame, referral_df: pd.DataFrame):
+    """Organic 합계 4개 + Referral 합계 4개를 세로 8행으로 복사."""
+    import streamlit.components.v1 as components
+
+    cols = ["총사용자", "세션수=session_start", "작성_시작 포함 이벤트수", "작성_완료 포함 이벤트수"]
+
+    def get_total_row(df):
+        total = df[df["구분"] == "합계"]
+        if total.empty:
+            return [0, 0, 0, 0]
+        return [int(total.iloc[0][c]) for c in cols]
+
+    organic_vals = get_total_row(organic_df)
+    referral_vals = get_total_row(referral_df)
+
+    eight_rows = "\n".join(str(v) for v in organic_vals + referral_vals)
+    escaped = eight_rows.replace("`", "\\`")
+
+    label_lines = [
+        "Organic Search 총사용자", "Organic Search 세션수",
+        "Organic Search 작성시작", "Organic Search 작성완료",
+        "Referral 총사용자", "Referral 세션수",
+        "Referral 작성시작", "Referral 작성완료",
+    ]
+    preview = "  /  ".join(
+        f"{l}: {v}" for l, v in zip(label_lines, organic_vals + referral_vals)
+    )
+
+    components.html(
+        f"""
+        <div style="font-size:12px; color:#555; margin-bottom:4px;">{preview}</div>
+        <button onclick="
+            navigator.clipboard.writeText(`{escaped}`).then(() => {{
+                this.textContent = '✅ 복사됨';
+                setTimeout(() => this.textContent = '📋 8행 세로 복사 (Organic+Referral 합계)', 2000);
+            }});
+        " style="
+            padding: 6px 16px;
+            font-size: 13px;
+            cursor: pointer;
+            border: 1px solid #4a90d9;
+            border-radius: 6px;
+            background: #e8f0fe;
+            color: #1a56a0;
+            font-weight: bold;
+        ">📋 8행 세로 복사 (Organic+Referral 합계)</button>
+        """,
+        height=60,
+    )
+
+
 def copy_button(df: pd.DataFrame, key: str):
     import streamlit.components.v1 as components
 
@@ -444,6 +495,11 @@ def run_streamlit():
         st.subheader("Referral / Organic Social / Unassigned")
         st.dataframe(results["Referral_OS_Unassigned"], use_container_width=True)
         copy_button(results["Referral_OS_Unassigned"], key="referral")
+
+        st.divider()
+        st.markdown("**Organic + Referral 합계 8행 복사**")
+        copy_8rows_button(results["Organic Search"], results["Referral_OS_Unassigned"])
+        st.divider()
 
         st.subheader("AI Search (Gemini / GPT / Perplexity)")
         st.caption("세션 소스/매체에 gemini·gpt·perplexity 포함된 행 기준")
