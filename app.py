@@ -539,17 +539,26 @@ def run_streamlit():
             revoke_token_endpoint="https://oauth2.googleapis.com/revoke",
         )
 
-        token_result = oauth2.authorize_button(
-            name="🔑 Google 계정으로 로그인",
-            redirect_uri=st.secrets.get("REDIRECT_URI", "http://localhost:8501"),
-            scope="https://www.googleapis.com/auth/analytics.readonly",
-            key="google_oauth",
-            use_container_width=False,
-        )
-
-        # 로그인 성공 후 세션에 토큰 보관
-        if token_result and "token" in token_result:
-            st.session_state["oauth_token"] = token_result["token"]
+        try:
+            token_result = oauth2.authorize_button(
+                name="🔑 Google 계정으로 로그인",
+                redirect_uri=st.secrets.get("REDIRECT_URI", "http://localhost:8501"),
+                scope="https://www.googleapis.com/auth/analytics.readonly",
+                key="google_oauth",
+                use_container_width=False,
+            )
+            # 로그인 성공 후 세션에 토큰 보관
+            if token_result and "token" in token_result:
+                st.session_state["oauth_token"] = token_result["token"]
+        except Exception:
+            # state 불일치 등 OAuth 오류 → 세션 초기화 후 재시도
+            stale_keys = [k for k in st.session_state if any(
+                x in k.lower() for x in ("oauth", "token", "state", "code")
+            )]
+            for k in stale_keys:
+                del st.session_state[k]
+            st.warning("로그인 세션이 만료되었습니다. 아래 버튼으로 다시 로그인해주세요.")
+            st.rerun()
 
         access_token = (st.session_state.get("oauth_token") or {}).get("access_token")
 
