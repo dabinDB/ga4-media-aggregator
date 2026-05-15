@@ -478,7 +478,10 @@ def run_streamlit():
                     with st.spinner("GA4 API 호출 중…"):
                         if has_secret_creds:
                             # Streamlit Secrets는 AttrDict → 일반 dict로 변환
+                            # private_key의 \n이 리터럴 문자열로 저장되는 경우 실제 줄바꿈으로 복원
                             creds_info = dict(secret_creds)
+                            if "private_key" in creds_info:
+                                creds_info["private_key"] = creds_info["private_key"].replace("\\n", "\n")
                         else:
                             creds_info = json.load(cred_file)
 
