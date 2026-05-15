@@ -435,9 +435,12 @@ def run_streamlit():
         import datetime
 
         # Secrets에서 인증 정보 로드 시도
-        secret_creds    = st.secrets.get("GA4_CREDENTIALS", None)
-        secret_prop_id  = st.secrets.get("GA4_PROPERTY_ID", "")
-        has_secret_creds = secret_creds is not None
+        # GA4_CREDENTIALS_JSON: 서비스 계정 JSON 파일 내용을 문자열 통째로 저장
+        # GA4_CREDENTIALS: TOML 테이블 형식 (fallback)
+        secret_creds_json = st.secrets.get("GA4_CREDENTIALS_JSON", None)
+        secret_creds      = st.secrets.get("GA4_CREDENTIALS", None)
+        secret_prop_id    = st.secrets.get("GA4_PROPERTY_ID", "")
+        has_secret_creds  = (secret_creds_json is not None) or (secret_creds is not None)
 
         if has_secret_creds:
             st.success("🔐 서비스 계정이 Secrets에서 자동으로 로드되었습니다.")
@@ -477,11 +480,14 @@ def run_streamlit():
                 try:
                     with st.spinner("GA4 API 호출 중…"):
                         if has_secret_creds:
-                            # Streamlit Secrets는 AttrDict → 일반 dict로 변환
-                            # private_key의 \n이 리터럴 문자열로 저장되는 경우 실제 줄바꿈으로 복원
-                            creds_info = dict(secret_creds)
-                            if "private_key" in creds_info:
-                                creds_info["private_key"] = creds_info["private_key"].replace("\\n", "\n")
+                            if secret_creds_json is not None:
+                                # JSON 문자열 통째로 저장된 경우 → json.loads로 파싱 (가장 안전)
+                                creds_info = json.loads(str(secret_creds_json))
+                            else:
+                                # TOML 테이블 형식 fallback
+                                creds_info = dict(secret_creds)
+                                if "private_key" in creds_info:
+                                    creds_info["private_key"] = creds_info["private_key"].replace("\\n", "\n")
                         else:
                             creds_info = json.load(cred_file)
 
