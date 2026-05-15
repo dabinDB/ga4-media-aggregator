@@ -432,28 +432,43 @@ def run_streamlit():
 
     # ── 탭 2: GA4 API 연동 ───────────────────────────────────────────────────
     with tab_api:
-        st.markdown("서비스 계정 JSON 키로 GA4 Data API를 직접 호출합니다.")
+        import datetime
 
-        col_l, col_r = st.columns([1, 1])
-        with col_l:
+        # Secrets에서 인증 정보 로드 시도
+        secret_creds    = st.secrets.get("GA4_CREDENTIALS", None)
+        secret_prop_id  = st.secrets.get("GA4_PROPERTY_ID", "")
+        has_secret_creds = secret_creds is not None
+
+        if has_secret_creds:
+            st.success("🔐 서비스 계정이 Secrets에서 자동으로 로드되었습니다.")
+            cred_file = None
+        else:
+            st.info("Secrets 미설정 — JSON 키 파일을 직접 업로드하세요.")
             cred_file = st.file_uploader(
                 "서비스 계정 JSON 키 업로드",
                 type=["json"],
                 key="cred_uploader",
                 help="Google Cloud 콘솔 → 서비스 계정 → 키 만들기(JSON)",
             )
+
+        col_l, col_r = st.columns([1, 1])
+        with col_l:
             property_id = st.text_input(
                 "GA4 Property ID",
+                value=str(secret_prop_id),
                 placeholder="예: 123456789",
                 help="GA4 관리 → 속성 → 속성 ID",
             )
         with col_r:
-            import datetime
             today = datetime.date.today()
             start_date = st.date_input("시작일", value=today.replace(day=1))
             end_date   = st.date_input("종료일", value=today)
 
-        fetch_btn = st.button("📡 데이터 가져오기", type="primary", disabled=not (cred_file and property_id))
+        creds_ready = has_secret_creds or (cred_file is not None)
+        fetch_btn = st.button(
+            "📡 데이터 가져오기", type="primary",
+            disabled=not (creds_ready and property_id),
+        )
 
         if fetch_btn:
             if start_date > end_date:
@@ -461,7 +476,12 @@ def run_streamlit():
             else:
                 try:
                     with st.spinner("GA4 API 호출 중…"):
-                        creds_info = json.load(cred_file)
+                        if has_secret_creds:
+                            # Streamlit Secrets는 AttrDict → 일반 dict로 변환
+                            creds_info = dict(secret_creds)
+                        else:
+                            creds_info = json.load(cred_file)
+
                         users_df, sessions_df = fetch_ga4_data(
                             credentials_info=creds_info,
                             property_id=str(property_id).strip(),
