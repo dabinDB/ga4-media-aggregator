@@ -539,31 +539,41 @@ def run_streamlit():
             revoke_token_endpoint="https://oauth2.googleapis.com/revoke",
         )
 
-        try:
-            token_result = oauth2.authorize_button(
-                name="🔑 Google 계정으로 로그인",
-                redirect_uri=st.secrets.get("REDIRECT_URI", "http://localhost:8501"),
-                scope="https://www.googleapis.com/auth/analytics.readonly",
-                key="google_oauth",
-                use_container_width=False,
-            )
-            # 로그인 성공 후 세션에 토큰 보관
-            if token_result and "token" in token_result:
-                st.session_state["oauth_token"] = token_result["token"]
-        except Exception:
-            # state 불일치 등 OAuth 오류 → 세션 초기화 후 재시도
-            stale_keys = [k for k in st.session_state if any(
-                x in k.lower() for x in ("oauth", "token", "state", "code")
-            )]
-            for k in stale_keys:
-                del st.session_state[k]
-            st.warning("로그인 세션이 만료되었습니다. 아래 버튼으로 다시 로그인해주세요.")
-            st.rerun()
+        # 이미 로그인된 경우 authorize_button 호출 자체를 건너뜀
+        access_token = (st.session_state.get("oauth_token") or {}).get("access_token")
+
+        if not access_token:
+            try:
+                token_result = oauth2.authorize_button(
+                    name="🔑 Google 계정으로 로그인",
+                    redirect_uri=st.secrets.get("REDIRECT_URI", "http://localhost:8501"),
+                    scope="https://www.googleapis.com/auth/analytics.readonly",
+                    key="google_oauth",
+                    use_container_width=False,
+                )
+                if token_result and "token" in token_result:
+                    st.session_state["oauth_token"] = token_result["token"]
+                    st.rerun()
+            except Exception:
+                # state 불일치 등 OAuth flow 오류 → flow 관련 키만 초기화
+                stale_keys = [k for k in st.session_state if any(
+                    x in k.lower() for x in ("state", "code", "google_oauth")
+                )]
+                for k in stale_keys:
+                    del st.session_state[k]
+                st.warning("로그인 세션이 만료되었습니다. 다시 로그인해주세요.")
+                st.rerun()
 
         access_token = (st.session_state.get("oauth_token") or {}).get("access_token")
 
         if access_token:
-            st.success("✅ Google 로그인 완료")
+            col_status, col_logout = st.columns([4, 1])
+            with col_status:
+                st.success("✅ Google 로그인 완료")
+            with col_logout:
+                if st.button("로그아웃", key="logout_btn"):
+                    del st.session_state["oauth_token"]
+                    st.rerun()
 
             fetch_btn = st.button(
                 "📡 데이터 가져오기", type="primary",
