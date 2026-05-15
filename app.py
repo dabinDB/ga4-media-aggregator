@@ -149,6 +149,77 @@ def fetch_ga4_data(
     return users_df, sessions_df
 
 
+def fetch_ga4_data_oauth(credentials, property_id: str, start_date: str, end_date: str):
+    """OAuth 액세스 토큰으로 GA4 Data API 호출 (서비스 계정 불필요)."""
+    from google.analytics.data_v1beta import BetaAnalyticsDataClient
+    from google.analytics.data_v1beta.types import (
+        DateRange, Dimension, Filter, FilterExpression,
+        FilterExpressionList, Metric, RunReportRequest,
+    )
+
+    client = BetaAnalyticsDataClient(credentials=credentials)
+
+    prop       = f"properties/{property_id}"
+    date_range = DateRange(start_date=start_date, end_date=end_date)
+    dimensions = [
+        Dimension(name="date"),
+        Dimension(name="sessionDefaultChannelGroup"),
+        Dimension(name="sessionSourceMedium"),
+        Dimension(name="eventName"),
+    ]
+
+    users_req = RunReportRequest(
+        property=prop, date_ranges=[date_range], dimensions=dimensions,
+        metrics=[Metric(name="totalUsers")],
+        dimension_filter=FilterExpression(filter=Filter(
+            field_name="eventName",
+            string_filter=Filter.StringFilter(
+                match_type=Filter.StringFilter.MatchType.CONTAINS,
+                value="session_start",
+            ),
+        )),
+        limit=100000,
+    )
+
+    sessions_req = RunReportRequest(
+        property=prop, date_ranges=[date_range], dimensions=dimensions,
+        metrics=[Metric(name="sessions")],
+        dimension_filter=FilterExpression(
+            and_group=FilterExpressionList(expressions=[
+                FilterExpression(filter=Filter(
+                    field_name="eventName",
+                    string_filter=Filter.StringFilter(
+                        match_type=Filter.StringFilter.MatchType.PARTIAL_REGEXP,
+                        value="가입신청서|session_start|유심_배송신청서",
+                    ),
+                )),
+                FilterExpression(filter=Filter(
+                    field_name="eventName",
+                    string_filter=Filter.StringFilter(
+                        match_type=Filter.StringFilter.MatchType.PARTIAL_REGEXP,
+                        value="가입신청서|session_start",
+                    ),
+                )),
+            ])
+        ),
+        limit=100000,
+    )
+
+    def to_df(response, metric_col):
+        rows = [
+            [d.value for d in row.dimension_values] + [m.value for m in row.metric_values]
+            for row in response.rows
+        ]
+        df = pd.DataFrame(rows, columns=["date", "세션 기본 채널 그룹", "세션 소스/매체", "이벤트 이름", metric_col])
+        df[metric_col] = pd.to_numeric(df[metric_col], errors="coerce").fillna(0).astype(int)
+        return df
+
+    return (
+        to_df(client.run_report(users_req),    "총 사용자"),
+        to_df(client.run_report(sessions_req), "세션수"),
+    )
+
+
 # ── 전처리 / 분류 ─────────────────────────────────────────────────────────────
 def normalize_df(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
@@ -433,77 +504,85 @@ def run_streamlit():
     # ── 탭 2: GA4 API 연동 ───────────────────────────────────────────────────
     with tab_api:
         import datetime
+        from streamlit_oauth import OAuth2Component
+        from google.oauth2.credentials import Credentials as OAuthCredentials
 
-        # Secrets에서 인증 정보 로드 시도
-        # GA4_CREDENTIALS_JSON: 서비스 계정 JSON 파일 내용을 문자열 통째로 저장
-        # GA4_CREDENTIALS: TOML 테이블 형식 (fallback)
-        secret_creds_json = st.secrets.get("GA4_CREDENTIALS_JSON", None)
-        secret_creds      = st.secrets.get("GA4_CREDENTIALS", None)
-        secret_prop_id    = st.secrets.get("GA4_PROPERTY_ID", "")
-        has_secret_creds  = (secret_creds_json is not None) or (secret_creds is not None)
+        secret_prop_id = st.secrets.get("GA4_PROPERTY_ID", "")
+        client_id      = st.secrets.get("GOOGLE_CLIENT_ID", "")
+        client_secret  = st.secrets.get("GOOGLE_CLIENT_SECRET", "")
 
-        if has_secret_creds:
-            st.success("🔐 서비스 계정이 Secrets에서 자동으로 로드되었습니다.")
-            cred_file = None
-        else:
-            st.info("Secrets 미설정 — JSON 키 파일을 직접 업로드하세요.")
-            cred_file = st.file_uploader(
-                "서비스 계정 JSON 키 업로드",
-                type=["json"],
-                key="cred_uploader",
-                help="Google Cloud 콘솔 → 서비스 계정 → 키 만들기(JSON)",
-            )
+        if not client_id or not client_secret:
+            st.error("Secrets에 GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET 가 설정되지 않았습니다.")
+            st.stop()
 
+        # ── 날짜 & Property ID ───────────────────────────────────────────────
         col_l, col_r = st.columns([1, 1])
         with col_l:
             property_id = st.text_input(
                 "GA4 Property ID",
                 value=str(secret_prop_id),
                 placeholder="예: 123456789",
-                help="GA4 관리 → 속성 → 속성 ID",
+                help="GA4 관리 → 속성 → 속성 ID (숫자)",
             )
         with col_r:
-            today = datetime.date.today()
+            today      = datetime.date.today()
             start_date = st.date_input("시작일", value=today.replace(day=1))
             end_date   = st.date_input("종료일", value=today)
 
-        creds_ready = has_secret_creds or (cred_file is not None)
-        fetch_btn = st.button(
-            "📡 데이터 가져오기", type="primary",
-            disabled=not (creds_ready and property_id),
+        # ── Google OAuth 로그인 ──────────────────────────────────────────────
+        oauth2 = OAuth2Component(
+            client_id=client_id,
+            client_secret=client_secret,
+            authorize_endpoint="https://accounts.google.com/o/oauth2/v2/auth",
+            token_endpoint="https://oauth2.googleapis.com/token",
+            refresh_token_endpoint="https://oauth2.googleapis.com/token",
+            revoke_token_endpoint="https://oauth2.googleapis.com/revoke",
         )
 
-        if fetch_btn:
-            if start_date > end_date:
-                st.error("시작일이 종료일보다 늦습니다.")
-            else:
-                try:
-                    with st.spinner("GA4 API 호출 중…"):
-                        if has_secret_creds:
-                            if secret_creds_json is not None:
-                                # JSON 문자열 통째로 저장된 경우 → json.loads로 파싱 (가장 안전)
-                                creds_info = json.loads(str(secret_creds_json))
-                            else:
-                                # TOML 테이블 형식 fallback
-                                creds_info = dict(secret_creds)
-                                if "private_key" in creds_info:
-                                    creds_info["private_key"] = creds_info["private_key"].replace("\\n", "\n")
-                        else:
-                            creds_info = json.load(cred_file)
+        token_result = oauth2.authorize_button(
+            name="🔑 Google 계정으로 로그인",
+            redirect_uri=st.secrets.get("REDIRECT_URI", "http://localhost:8501"),
+            scope="https://www.googleapis.com/auth/analytics.readonly",
+            key="google_oauth",
+            use_container_width=False,
+        )
 
-                        users_df, sessions_df = fetch_ga4_data(
-                            credentials_info=creds_info,
-                            property_id=str(property_id).strip(),
-                            start_date=start_date.strftime("%Y-%m-%d"),
-                            end_date=end_date.strftime("%Y-%m-%d"),
+        # 로그인 성공 후 세션에 토큰 보관
+        if token_result and "token" in token_result:
+            st.session_state["oauth_token"] = token_result["token"]
+
+        access_token = (st.session_state.get("oauth_token") or {}).get("access_token")
+
+        if access_token:
+            st.success("✅ Google 로그인 완료")
+
+            fetch_btn = st.button(
+                "📡 데이터 가져오기", type="primary",
+                disabled=not property_id,
+            )
+
+            if fetch_btn:
+                if start_date > end_date:
+                    st.error("시작일이 종료일보다 늦습니다.")
+                else:
+                    try:
+                        with st.spinner("GA4 API 호출 중…"):
+                            creds = OAuthCredentials(token=access_token)
+                            users_df, sessions_df = fetch_ga4_data_oauth(
+                                credentials=creds,
+                                property_id=str(property_id).strip(),
+                                start_date=start_date.strftime("%Y-%m-%d"),
+                                end_date=end_date.strftime("%Y-%m-%d"),
+                            )
+                        st.success(
+                            f"총사용자 {len(users_df):,}행 · 세션수 {len(sessions_df):,}행 수신 완료"
                         )
-                    st.success(
-                        f"총사용자 {len(users_df):,}행 · 세션수 {len(sessions_df):,}행 수신 완료"
-                    )
-                    results = make_result(users_df, sessions_df, exclude_keywords=exclude_keywords)
-                    show_results(results, st)
-                except Exception as e:
-                    st.error(str(e))
+                        results = make_result(users_df, sessions_df, exclude_keywords=exclude_keywords)
+                        show_results(results, st)
+                    except Exception as e:
+                        st.error(str(e))
+        else:
+            st.info("위 버튼으로 Google 계정에 로그인하면 GA4 데이터를 가져올 수 있습니다.")
 
 
 # ── CLI ───────────────────────────────────────────────────────────────────────
