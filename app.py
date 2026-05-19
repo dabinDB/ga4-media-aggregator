@@ -583,6 +583,7 @@ def run_streamlit():
                     name="🔑 Google 계정으로 로그인",
                     redirect_uri=st.secrets.get("REDIRECT_URI", "http://localhost:8501"),
                     scope="https://www.googleapis.com/auth/analytics.readonly",
+                    extras_params={"access_type": "offline", "prompt": "consent"},
                     key="google_oauth",
                     use_container_width=False,
                 )
@@ -590,7 +591,6 @@ def run_streamlit():
                     st.session_state["oauth_token"] = token_result["token"]
                     st.rerun()
             except Exception:
-                # state 불일치 등 OAuth flow 오류 → flow 관련 키만 초기화
                 stale_keys = [k for k in st.session_state if any(
                     x in k.lower() for x in ("state", "code", "google_oauth")
                 )]
@@ -600,6 +600,7 @@ def run_streamlit():
                 st.rerun()
 
         access_token = (st.session_state.get("oauth_token") or {}).get("access_token")
+        refresh_token = (st.session_state.get("oauth_token") or {}).get("refresh_token")
 
         if access_token:
             col_status, col_logout = st.columns([4, 1])
@@ -621,7 +622,13 @@ def run_streamlit():
                 else:
                     try:
                         with st.spinner("GA4 API 호출 중…"):
-                            creds = OAuthCredentials(token=access_token)
+                            creds = OAuthCredentials(
+                                token=access_token,
+                                refresh_token=refresh_token,
+                                token_uri="https://oauth2.googleapis.com/token",
+                                client_id=client_id,
+                                client_secret=client_secret,
+                            )
                             users_df, sessions_df = fetch_ga4_data_oauth(
                                 credentials=creds,
                                 property_id=str(property_id).strip(),
@@ -634,7 +641,13 @@ def run_streamlit():
                         results = make_result(users_df, sessions_df, exclude_keywords=exclude_keywords)
                         show_results(results, st)
                     except Exception as e:
-                        st.error(str(e))
+                        err = str(e)
+                        if "401" in err or "credentials" in err.lower():
+                            st.warning("인증이 만료되었습니다. 다시 로그인해주세요.")
+                            del st.session_state["oauth_token"]
+                            st.rerun()
+                        else:
+                            st.error(err)
         else:
             st.info("위 버튼으로 Google 계정에 로그인하면 GA4 데이터를 가져올 수 있습니다.")
 
