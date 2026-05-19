@@ -408,8 +408,43 @@ def copy_8rows_button(organic_df: pd.DataFrame, referral_df: pd.DataFrame):
     )
 
 
+def copy_all_button(results: dict):
+    """3개 표 전체를 표 이름 포함해서 한 번에 복사."""
+    import streamlit.components.v1 as components
+
+    sections = [
+        ("Organic Search",                results["Organic Search"]),
+        ("Referral / Organic Social / Unassigned", results["Referral_OS_Unassigned"]),
+        ("AI Search (ChatGPT / Gemini / Perplexity)", results["AI Search"]),
+    ]
+
+    blocks = []
+    for label, df in sections:
+        tsv = df.to_csv(index=False, sep="\t")
+        blocks.append(f"[ {label} ]\n{tsv}")
+
+    combined = "\n\n".join(blocks).replace("`", "\\`").replace("\\", "\\\\").replace("`", "\\`")
+    # 역슬래시 이중 처리 없이 단순하게
+    combined = "\n\n".join(blocks).replace("`", "'")
+
+    components.html(
+        f"""<button onclick="
+            navigator.clipboard.writeText(`{combined}`).then(() => {{
+                this.textContent = '✅ 전체 복사됨';
+                setTimeout(() => this.textContent = '📋 전체 표 복사 (3개 한번에)', 2000);
+            }});" style="padding:8px 20px;font-size:14px;cursor:pointer;
+            border:1px solid #2e7d32;border-radius:6px;background:#e8f5e9;
+            color:#1b5e20;font-weight:bold;width:100%;">
+            📋 전체 표 복사 (3개 한번에)</button>""",
+        height=48,
+    )
+
+
 def show_results(results: dict, st):
     """집계 결과를 화면에 출력하는 공통 함수."""
+    copy_all_button(results)
+    st.divider()
+
     st.subheader("Organic Search")
     st.dataframe(results["Organic Search"], use_container_width=True)
     copy_button(results["Organic Search"], key="organic")
