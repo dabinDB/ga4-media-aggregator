@@ -343,15 +343,68 @@ def aggregate_ga4(
     return result.reset_index().rename(columns={"index": "구분"})
 
 
+def aggregate_ga4_detail(
+    total_user_df, metric_df,
+    channel_mask_func, classify_func,
+    exclude_keywords=EXCLUDE_SOURCE_MEDIUM_KEYWORDS,
+):
+    """[구분, 세션 소스/매체] 단위 상세 집계."""
+    total_user_df = normalize_df(total_user_df)
+    metric_df     = normalize_df(metric_df)
+
+    user_base = total_user_df[
+        channel_mask_func(total_user_df)
+        & exact_not_excluded_mask(total_user_df, exclude_keywords)
+        & total_user_df["이벤트 이름"].str.lower().eq("session_start")
+    ].copy()
+
+    metric_base = metric_df[
+        channel_mask_func(metric_df)
+        & exact_not_excluded_mask(metric_df, exclude_keywords)
+    ].copy()
+
+    user_base["구분"]   = user_base["세션 소스/매체"].apply(classify_func)
+    metric_base["구분"] = metric_base["세션 소스/매체"].apply(classify_func)
+
+    grp = ["구분", "세션 소스/매체"]
+
+    total_users = (
+        user_base.groupby(grp, dropna=False)["총 사용자"]
+        .sum().rename("총사용자")
+    )
+    sessions = (
+        metric_base[metric_base["이벤트 이름"].str.lower().eq("session_start")]
+        .groupby(grp, dropna=False)["세션수"]
+        .sum().rename("세션수=session_start")
+    )
+    start_events = (
+        metric_base[metric_base["이벤트 이름"].str.contains("작성_시작", na=False)]
+        .groupby(grp, dropna=False)["세션수"]
+        .sum().rename("작성_시작 포함 이벤트수")
+    )
+    complete_events = (
+        metric_base[metric_base["이벤트 이름"].str.contains("작성_완료", na=False)]
+        .groupby(grp, dropna=False)["세션수"]
+        .sum().rename("작성_완료 포함 이벤트수")
+    )
+
+    result = pd.concat([total_users, sessions, start_events, complete_events], axis=1)
+    result = result.fillna(0).astype(int).reset_index()
+    return result.sort_values(["구분", "총사용자"], ascending=[True, False]).reset_index(drop=True)
+
+
 def make_result(total_user_df, metric_df, exclude_keywords=EXCLUDE_SOURCE_MEDIUM_KEYWORDS):
     total_user_df, metric_df = auto_detect_files(
         normalize_df(total_user_df), normalize_df(metric_df)
     )
     kw = dict(total_user_df=total_user_df, metric_df=metric_df, exclude_keywords=exclude_keywords)
     return {
-        "Organic Search":       aggregate_ga4(**kw, channel_mask_func=organic_channel_mask,  classify_func=classify_organic,    order=ORGANIC_ORDER),
-        "Referral_OS_Unassigned": aggregate_ga4(**kw, channel_mask_func=referral_channel_mask, classify_func=classify_referral,   order=REFERRAL_ORDER),
-        "AI Search":            aggregate_ga4(**kw, channel_mask_func=ai_search_channel_mask, classify_func=classify_ai_search,  order=AI_SEARCH_ORDER),
+        "Organic Search":            aggregate_ga4(**kw, channel_mask_func=organic_channel_mask,  classify_func=classify_organic,   order=ORGANIC_ORDER),
+        "Organic Search_detail":     aggregate_ga4_detail(**kw, channel_mask_func=organic_channel_mask,  classify_func=classify_organic),
+        "Referral_OS_Unassigned":    aggregate_ga4(**kw, channel_mask_func=referral_channel_mask, classify_func=classify_referral,  order=REFERRAL_ORDER),
+        "Referral_OS_Unassigned_detail": aggregate_ga4_detail(**kw, channel_mask_func=referral_channel_mask, classify_func=classify_referral),
+        "AI Search":                 aggregate_ga4(**kw, channel_mask_func=ai_search_channel_mask, classify_func=classify_ai_search, order=AI_SEARCH_ORDER),
+        "AI Search_detail":          aggregate_ga4_detail(**kw, channel_mask_func=ai_search_channel_mask, classify_func=classify_ai_search),
     }
 
 
@@ -359,7 +412,15 @@ def to_excel_bytes(results):
     output = BytesIO()
     with pd.ExcelWriter(output, engine="openpyxl") as writer:
         for name, df in results.items():
-            df.to_excel(writer, sheet_name=name[:31], index=False)
+            if not name.endswith("_detail"):
+                df.to_excel(writer, sheet_name=name[:31], index=False)
+    return output.getvalue()
+
+
+def detail_excel_bytes(df: pd.DataFrame) -> bytes:
+    output = BytesIO()
+    with pd.ExcelWriter(output, engine="openpyxl") as writer:
+        df.to_excel(writer, sheet_name="상세", index=False)
     return output.getvalue()
 
 
@@ -447,11 +508,31 @@ def show_results(results: dict, st):
 
     st.subheader("Organic Search")
     st.dataframe(results["Organic Search"], use_container_width=True)
-    copy_button(results["Organic Search"], key="organic")
+    col1, col2 = st.columns([2, 1])
+    with col1:
+        copy_button(results["Organic Search"], key="organic")
+    with col2:
+        st.download_button(
+            "📥 상세 데이터 다운로드",
+            data=detail_excel_bytes(results["Organic Search_detail"]),
+            file_name="organic_search_detail.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            key="dl_organic_detail",
+        )
 
     st.subheader("Referral / Organic Social / Unassigned")
     st.dataframe(results["Referral_OS_Unassigned"], use_container_width=True)
-    copy_button(results["Referral_OS_Unassigned"], key="referral")
+    col1, col2 = st.columns([2, 1])
+    with col1:
+        copy_button(results["Referral_OS_Unassigned"], key="referral")
+    with col2:
+        st.download_button(
+            "📥 상세 데이터 다운로드",
+            data=detail_excel_bytes(results["Referral_OS_Unassigned_detail"]),
+            file_name="referral_detail.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            key="dl_referral_detail",
+        )
 
     st.divider()
     st.markdown("**Organic + Referral 합계 8행 복사**")
@@ -461,7 +542,17 @@ def show_results(results: dict, st):
     st.subheader("AI Search (ChatGPT / Gemini / Perplexity)")
     st.caption("세션 소스/매체에 gpt·gemini·perplexity 포함된 행 기준")
     st.dataframe(results["AI Search"], use_container_width=True)
-    copy_button(results["AI Search"], key="ai")
+    col1, col2 = st.columns([2, 1])
+    with col1:
+        copy_button(results["AI Search"], key="ai")
+    with col2:
+        st.download_button(
+            "📥 상세 데이터 다운로드",
+            data=detail_excel_bytes(results["AI Search_detail"]),
+            file_name="ai_search_detail.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            key="dl_ai_detail",
+        )
 
     excel_bytes = to_excel_bytes(results)
     st.download_button(
