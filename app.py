@@ -726,11 +726,12 @@ def run_streamlit():
                                 start_date=start_date.strftime("%Y-%m-%d"),
                                 end_date=end_date.strftime("%Y-%m-%d"),
                             )
-                        st.success(
+                        st.session_state["api_results"] = make_result(
+                            users_df, sessions_df, exclude_keywords=exclude_keywords
+                        )
+                        st.session_state["api_results_info"] = (
                             f"총사용자 {len(users_df):,}행 · 세션수 {len(sessions_df):,}행 수신 완료"
                         )
-                        results = make_result(users_df, sessions_df, exclude_keywords=exclude_keywords)
-                        show_results(results, st, key_prefix="api_")
                     except Exception as e:
                         err = str(e)
                         if "401" in err or "credentials" in err.lower():
@@ -739,6 +740,10 @@ def run_streamlit():
                             st.rerun()
                         else:
                             st.error(err)
+
+            if "api_results" in st.session_state:
+                st.success(st.session_state.get("api_results_info", ""))
+                show_results(st.session_state["api_results"], st, key_prefix="api_")
         else:
             st.info("위 버튼으로 Google 계정에 로그인하면 GA4 데이터를 가져올 수 있습니다.")
 
