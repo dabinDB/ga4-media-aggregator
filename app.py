@@ -501,7 +501,7 @@ def copy_all_button(results: dict):
     )
 
 
-def show_results(results: dict, st):
+def show_results(results: dict, st, key_prefix: str = ""):
     """집계 결과를 화면에 출력하는 공통 함수."""
     copy_all_button(results)
     st.divider()
@@ -510,28 +510,28 @@ def show_results(results: dict, st):
     st.dataframe(results["Organic Search"], use_container_width=True)
     col1, col2 = st.columns([2, 1])
     with col1:
-        copy_button(results["Organic Search"], key="organic")
+        copy_button(results["Organic Search"], key=f"{key_prefix}organic")
     with col2:
         st.download_button(
             "📥 상세 데이터 다운로드",
             data=detail_excel_bytes(results["Organic Search_detail"]),
             file_name="organic_search_detail.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            key="dl_organic_detail",
+            key=f"{key_prefix}dl_organic_detail",
         )
 
     st.subheader("Referral / Organic Social / Unassigned")
     st.dataframe(results["Referral_OS_Unassigned"], use_container_width=True)
     col1, col2 = st.columns([2, 1])
     with col1:
-        copy_button(results["Referral_OS_Unassigned"], key="referral")
+        copy_button(results["Referral_OS_Unassigned"], key=f"{key_prefix}referral")
     with col2:
         st.download_button(
             "📥 상세 데이터 다운로드",
             data=detail_excel_bytes(results["Referral_OS_Unassigned_detail"]),
             file_name="referral_detail.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            key="dl_referral_detail",
+            key=f"{key_prefix}dl_referral_detail",
         )
 
     st.divider()
@@ -544,14 +544,14 @@ def show_results(results: dict, st):
     st.dataframe(results["AI Search"], use_container_width=True)
     col1, col2 = st.columns([2, 1])
     with col1:
-        copy_button(results["AI Search"], key="ai")
+        copy_button(results["AI Search"], key=f"{key_prefix}ai")
     with col2:
         st.download_button(
             "📥 상세 데이터 다운로드",
             data=detail_excel_bytes(results["AI Search_detail"]),
             file_name="ai_search_detail.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            key="dl_ai_detail",
+            key=f"{key_prefix}dl_ai_detail",
         )
 
     excel_bytes = to_excel_bytes(results)
@@ -623,7 +623,7 @@ def run_streamlit():
                     pd.concat(metric_dfs, ignore_index=True),
                     exclude_keywords=exclude_keywords,
                 )
-                show_results(results, st)
+                show_results(results, st, key_prefix="file_")
             except Exception as e:
                 st.error(str(e))
 
@@ -730,7 +730,7 @@ def run_streamlit():
                             f"총사용자 {len(users_df):,}행 · 세션수 {len(sessions_df):,}행 수신 완료"
                         )
                         results = make_result(users_df, sessions_df, exclude_keywords=exclude_keywords)
-                        show_results(results, st)
+                        show_results(results, st, key_prefix="api_")
                     except Exception as e:
                         err = str(e)
                         if "401" in err or "credentials" in err.lower():
