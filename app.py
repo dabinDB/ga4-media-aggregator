@@ -13,7 +13,6 @@ import pandas as pd
 # ── 공통 제외 기준 ────────────────────────────────────────────────────────────
 EXCLUDE_SOURCE_MEDIUM_KEYWORDS = [
     "brandsearch",
-    "powercontents",
     "newproduct",
 ]
 
