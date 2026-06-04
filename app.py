@@ -13,8 +13,23 @@ import pandas as pd
 # ── 상수 ─────────────────────────────────────────────────────────────────────
 EXCLUDE_SOURCE_MEDIUM_KEYWORDS = ["brandsearch", "newproduct"]
 
-BASE_COLS    = ["세션 기본 채널 그룹", "세션 소스/매체"]
-EVENT_COL    = "이벤트 이름"
+BASE_COLS = ["세션 기본 채널 그룹", "세션 소스/매체"]
+EVENT_COL = "이벤트 이름"
+
+# 집계 대상 이벤트 (정확히 일치)
+START_EVENTS = [
+    "esim_가입신청서_작성_시작__pc_공통_",
+    "가입신청서_작성_시작__pc_공통_",
+    "가입신청서_작성_시작__mo_공통_",
+    "esim_가입신청서_작성_시작__mo_공통_",
+]
+COMPLETE_EVENTS = [
+    "가입신청서_작성_완료__mo_공통_",
+    "가입신청서_작성_완료__pc_공통_",
+    "esim_가입신청서_작성_완료__mo_공통_",
+    "esim_가입신청서_작성_완료__pc_공통_",
+]
+TARGET_EVENTS = START_EVENTS + COMPLETE_EVENTS
 
 ORGANIC_ORDER   = ["Google", "Naver", "Daum", "Bing", "그외"]
 REFERRAL_ORDER  = ["KT·자사", "네이버", "커뮤니티·콘텐츠", "카카오", "그외"]
@@ -169,11 +184,11 @@ def aggregate_ga4(fmt, df_a, df_b, channel_mask_func, classify_func, order,
         total_users = combined.groupby(grp_cols, dropna=False)["총 사용자"].sum().rename(COL_USERS)
         sessions    = combined.groupby(grp_cols, dropna=False)["세션수"].sum().rename(COL_SESSIONS)
         start_ev    = (
-            events[events[EVENT_COL].str.contains("작성_시작", na=False)]
+            events[events[EVENT_COL].isin(START_EVENTS)]
             .groupby(grp_cols, dropna=False)["주요 이벤트"].sum().rename(COL_START)
         )
         complete_ev = (
-            events[events[EVENT_COL].str.contains("작성_완료", na=False)]
+            events[events[EVENT_COL].isin(COMPLETE_EVENTS)]
             .groupby(grp_cols, dropna=False)["주요 이벤트"].sum().rename(COL_COMPLETE)
         )
 
@@ -197,11 +212,11 @@ def aggregate_ga4(fmt, df_a, df_b, channel_mask_func, classify_func, order,
             .groupby(grp_cols, dropna=False)["세션수"].sum().rename(COL_SESSIONS)
         )
         start_ev    = (
-            metric_base[metric_base[EVENT_COL].str.contains("작성_시작", na=False)]
+            metric_base[metric_base[EVENT_COL].isin(START_EVENTS)]
             .groupby(grp_cols, dropna=False)["세션수"].sum().rename(COL_START)
         )
         complete_ev = (
-            metric_base[metric_base[EVENT_COL].str.contains("작성_완료", na=False)]
+            metric_base[metric_base[EVENT_COL].isin(COMPLETE_EVENTS)]
             .groupby(grp_cols, dropna=False)["세션수"].sum().rename(COL_COMPLETE)
         )
 
@@ -265,16 +280,16 @@ def fetch_ga4_data_oauth(credentials, property_id: str, start_date: str, end_dat
         limit=100000,
     )
 
-    # ② event: keyEvents (작성_시작 / 작성_완료 이벤트)
+    # ② event: keyEvents (8개 이벤트 정확히 일치)
     event_req = RunReportRequest(
         property=prop, date_ranges=[date_range],
         dimensions=base_dims + [Dimension(name="eventName")],
         metrics=[Metric(name="keyEvents")],
         dimension_filter=FilterExpression(filter=Filter(
             field_name="eventName",
-            string_filter=Filter.StringFilter(
-                match_type=Filter.StringFilter.MatchType.PARTIAL_REGEXP,
-                value="가입신청서|유심_배송신청서",
+            in_list_filter=Filter.InListFilter(
+                values=TARGET_EVENTS,
+                case_sensitive=True,
             ),
         )),
         limit=100000,
