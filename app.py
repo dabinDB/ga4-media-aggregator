@@ -1,6 +1,6 @@
 # ga4_media_auto_aggregator.py
 # 사용법 1) 웹앱: streamlit run app.py
-# 사용법 2) CLI:  python app.py 총사용자파일.csv 세션수파일.csv 결과.xlsx
+# 사용법 2) CLI:  python app.py 파일A.csv 파일B.csv 결과.xlsx
 
 import json
 import re
@@ -10,24 +10,27 @@ from io import BytesIO
 import pandas as pd
 
 
-# ── 공통 제외 기준 ────────────────────────────────────────────────────────────
-EXCLUDE_SOURCE_MEDIUM_KEYWORDS = [
-    "brandsearch",
-    "newproduct",
-]
+# ── 상수 ─────────────────────────────────────────────────────────────────────
+EXCLUDE_SOURCE_MEDIUM_KEYWORDS = ["brandsearch", "newproduct"]
 
-REQUIRED_BASE_COLS = ["세션 기본 채널 그룹", "세션 소스/매체", "이벤트 이름"]
+BASE_COLS    = ["세션 기본 채널 그룹", "세션 소스/매체"]
+EVENT_COL    = "이벤트 이름"
 
-ORGANIC_ORDER  = ["Google", "Naver", "Daum", "Bing", "그외"]
-REFERRAL_ORDER = ["KT·자사", "네이버", "커뮤니티·콘텐츠", "카카오", "그외"]
+ORGANIC_ORDER   = ["Google", "Naver", "Daum", "Bing", "그외"]
+REFERRAL_ORDER  = ["KT·자사", "네이버", "커뮤니티·콘텐츠", "카카오", "그외"]
 AI_SEARCH_ORDER = ["ChatGPT", "Gemini", "Perplexity"]
+
+# 출력 컬럼명 (포맷 무관하게 동일)
+COL_USERS    = "총사용자"
+COL_SESSIONS = "세션수"
+COL_START    = "작성_시작 이벤트수"
+COL_COMPLETE = "작성_완료 이벤트수"
 
 KT_OWNED_KEYWORDS = [
     "ktmmobile.com", "ktmmobile", "ktm모바일", "ktmyr.com",
     "ktmmarket.co.kr", "kt-aicc.com", "groupmail.kt.co.kr",
     "directmall", "kt.com", "kt.co.kr",
 ]
-
 COMMUNITY_CONTENT_KEYWORDS = [
     "ppomppu", "dcinside", "fmkorea", "clien", "theqoo",
     "quasarzone", "reddit", "cetizen",
@@ -47,212 +50,65 @@ def read_csv_safely(file):
     raise ValueError("CSV 파일을 읽지 못했습니다.")
 
 
-# ── GA4 API 데이터 가져오기 ───────────────────────────────────────────────────
-def fetch_ga4_data(
-    credentials_info: dict,
-    property_id: str,
-    start_date: str,
-    end_date: str,
-) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """
-    GA4 Data API로 두 보고서를 가져와 (총사용자 df, 세션수 df) 반환.
-    - 총사용자: eventName CONTAINS 'session_start'
-    - 세션수: eventName PARTIAL_REGEXP '가입신청서|session_start|유심_배송신청서'
-              AND eventName PARTIAL_REGEXP '가입신청서|session_start'
-    """
-    from google.analytics.data_v1beta import BetaAnalyticsDataClient
-    from google.analytics.data_v1beta.types import (
-        DateRange, Dimension, Filter, FilterExpression,
-        FilterExpressionList, Metric, RunReportRequest,
-    )
-    from google.oauth2.service_account import Credentials
-
-    creds = Credentials.from_service_account_info(
-        credentials_info,
-        scopes=["https://www.googleapis.com/auth/analytics.readonly"],
-    )
-    client = BetaAnalyticsDataClient(credentials=creds)
-
-    prop = f"properties/{property_id}"
-    date_range = DateRange(start_date=start_date, end_date=end_date)
-    dimensions = [
-        Dimension(name="date"),
-        Dimension(name="sessionDefaultChannelGroup"),
-        Dimension(name="sessionSourceMedium"),
-        Dimension(name="eventName"),
-    ]
-
-    # ① 총사용자 보고서
-    users_req = RunReportRequest(
-        property=prop,
-        date_ranges=[date_range],
-        dimensions=dimensions,
-        metrics=[Metric(name="totalUsers")],
-        dimension_filter=FilterExpression(
-            filter=Filter(
-                field_name="eventName",
-                string_filter=Filter.StringFilter(
-                    match_type=Filter.StringFilter.MatchType.CONTAINS,
-                    value="session_start",
-                ),
-            )
-        ),
-        limit=100000,
-    )
-
-    # ② 세션수 보고서
-    sessions_req = RunReportRequest(
-        property=prop,
-        date_ranges=[date_range],
-        dimensions=dimensions,
-        metrics=[Metric(name="sessions")],
-        dimension_filter=FilterExpression(
-            and_group=FilterExpressionList(
-                expressions=[
-                    FilterExpression(
-                        filter=Filter(
-                            field_name="eventName",
-                            string_filter=Filter.StringFilter(
-                                match_type=Filter.StringFilter.MatchType.PARTIAL_REGEXP,
-                                value="가입신청서|session_start|유심_배송신청서",
-                            ),
-                        )
-                    ),
-                    FilterExpression(
-                        filter=Filter(
-                            field_name="eventName",
-                            string_filter=Filter.StringFilter(
-                                match_type=Filter.StringFilter.MatchType.PARTIAL_REGEXP,
-                                value="가입신청서|session_start",
-                            ),
-                        )
-                    ),
-                ]
-            )
-        ),
-        limit=100000,
-    )
-
-    def response_to_df(response, metric_col: str) -> pd.DataFrame:
-        rows = [
-            [d.value for d in row.dimension_values] + [m.value for m in row.metric_values]
-            for row in response.rows
-        ]
-        cols = ["date", "세션 기본 채널 그룹", "세션 소스/매체", "이벤트 이름", metric_col]
-        df = pd.DataFrame(rows, columns=cols)
-        df[metric_col] = pd.to_numeric(df[metric_col], errors="coerce").fillna(0).astype(int)
-        return df
-
-    users_df   = response_to_df(client.run_report(users_req),   "총 사용자")
-    sessions_df = response_to_df(client.run_report(sessions_req), "세션수")
-    return users_df, sessions_df
-
-
-def fetch_ga4_data_oauth(credentials, property_id: str, start_date: str, end_date: str):
-    """OAuth 액세스 토큰으로 GA4 Data API 호출 (서비스 계정 불필요)."""
-    from google.analytics.data_v1beta import BetaAnalyticsDataClient
-    from google.analytics.data_v1beta.types import (
-        DateRange, Dimension, Filter, FilterExpression,
-        FilterExpressionList, Metric, RunReportRequest,
-    )
-
-    client = BetaAnalyticsDataClient(credentials=credentials)
-
-    prop       = f"properties/{property_id}"
-    date_range = DateRange(start_date=start_date, end_date=end_date)
-    dimensions = [
-        Dimension(name="date"),
-        Dimension(name="sessionDefaultChannelGroup"),
-        Dimension(name="sessionSourceMedium"),
-        Dimension(name="eventName"),
-    ]
-
-    users_req = RunReportRequest(
-        property=prop, date_ranges=[date_range], dimensions=dimensions,
-        metrics=[Metric(name="totalUsers")],
-        dimension_filter=FilterExpression(filter=Filter(
-            field_name="eventName",
-            string_filter=Filter.StringFilter(
-                match_type=Filter.StringFilter.MatchType.CONTAINS,
-                value="session_start",
-            ),
-        )),
-        limit=100000,
-    )
-
-    sessions_req = RunReportRequest(
-        property=prop, date_ranges=[date_range], dimensions=dimensions,
-        metrics=[Metric(name="sessions")],
-        dimension_filter=FilterExpression(
-            and_group=FilterExpressionList(expressions=[
-                FilterExpression(filter=Filter(
-                    field_name="eventName",
-                    string_filter=Filter.StringFilter(
-                        match_type=Filter.StringFilter.MatchType.PARTIAL_REGEXP,
-                        value="가입신청서|session_start|유심_배송신청서",
-                    ),
-                )),
-                FilterExpression(filter=Filter(
-                    field_name="eventName",
-                    string_filter=Filter.StringFilter(
-                        match_type=Filter.StringFilter.MatchType.PARTIAL_REGEXP,
-                        value="가입신청서|session_start",
-                    ),
-                )),
-            ])
-        ),
-        limit=100000,
-    )
-
-    def to_df(response, metric_col):
-        rows = [
-            [d.value for d in row.dimension_values] + [m.value for m in row.metric_values]
-            for row in response.rows
-        ]
-        df = pd.DataFrame(rows, columns=["date", "세션 기본 채널 그룹", "세션 소스/매체", "이벤트 이름", metric_col])
-        df[metric_col] = pd.to_numeric(df[metric_col], errors="coerce").fillna(0).astype(int)
-        return df
-
-    return (
-        to_df(client.run_report(users_req),    "총 사용자"),
-        to_df(client.run_report(sessions_req), "세션수"),
-    )
-
-
-# ── 전처리 / 분류 ─────────────────────────────────────────────────────────────
+# ── 전처리 ────────────────────────────────────────────────────────────────────
 def normalize_df(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
     df.columns = [str(c).strip() for c in df.columns]
-    for col in REQUIRED_BASE_COLS:
+    for col in BASE_COLS + [EVENT_COL]:
         if col in df.columns:
             df[col] = df[col].fillna("").astype(str).str.strip()
     return df
 
 
-def validate_input(total_user_df, metric_df):
-    miss_u = [c for c in REQUIRED_BASE_COLS + ["총 사용자"] if c not in total_user_df.columns]
-    miss_m = [c for c in REQUIRED_BASE_COLS + ["세션수"]    if c not in metric_df.columns]
-    if miss_u:
-        raise ValueError(f"총 사용자 파일에 필요한 컬럼이 없습니다: {miss_u}")
-    if miss_m:
-        raise ValueError(f"세션수 파일에 필요한 컬럼이 없습니다: {miss_m}")
+# ── 파일 형식 자동 감지 ───────────────────────────────────────────────────────
+def detect_data_format(dfs: list[pd.DataFrame]):
+    """
+    신형: combined (세션수+총사용자) + event (주요이벤트)
+    구형: user (총사용자+이벤트이름) + session (세션수+이벤트이름)
+    """
+    combined_list, event_list, user_list, session_list = [], [], [], []
+
+    for df in dfs:
+        df = normalize_df(df)
+        cols = set(df.columns)
+        has_users    = "총 사용자" in cols
+        has_sessions = "세션수" in cols
+        has_key_ev   = "주요 이벤트" in cols
+        has_event    = EVENT_COL in cols
+
+        if has_users and has_sessions:
+            combined_list.append(df)
+        elif has_key_ev and has_event:
+            event_list.append(df)
+        elif has_users and has_event:
+            user_list.append(df)
+        elif has_sessions and has_event:
+            session_list.append(df)
+        else:
+            raise ValueError(
+                f"인식할 수 없는 파일입니다. 컬럼: {sorted(cols)}\n"
+                "필요: ① '세션수'+'총 사용자' 파일 + '주요 이벤트' 파일  "
+                "또는  ② '총 사용자' 파일 + '세션수' 파일 (각각 이벤트 이름 포함)"
+            )
+
+    if combined_list and event_list:
+        return "new", pd.concat(combined_list, ignore_index=True), pd.concat(event_list, ignore_index=True)
+    if user_list and session_list:
+        return "old", pd.concat(user_list, ignore_index=True), pd.concat(session_list, ignore_index=True)
+
+    raise ValueError(
+        "파일 조합을 인식할 수 없습니다.\n"
+        "① 신형: '세션수+총사용자' 파일 + '주요이벤트' 파일\n"
+        "② 구형: '총사용자(+이벤트이름)' 파일 + '세션수(+이벤트이름)' 파일"
+    )
 
 
-def auto_detect_files(df1, df2):
-    if "총 사용자" in df1.columns and "세션수" in df2.columns:
-        return df1, df2
-    if "총 사용자" in df2.columns and "세션수" in df1.columns:
-        return df2, df1
-    raise ValueError("하나에는 '총 사용자', 다른 하나에는 '세션수' 컬럼이 있어야 합니다.")
-
-
+# ── 마스크 / 분류 함수 ─────────────────────────────────────────────────────────
 def exact_not_excluded_mask(df, keywords):
     if not keywords:
         return pd.Series(True, index=df.index)
     src = df["세션 소스/매체"].fillna("").astype(str).str.lower()
-    pattern = "|".join(re.escape(k) for k in keywords)
-    return ~src.str.contains(pattern, regex=True)
-
+    return ~src.str.contains("|".join(re.escape(k) for k in keywords), regex=True)
 
 def organic_channel_mask(df):
     return df["세션 기본 채널 그룹"].str.lower().eq("organic search")
@@ -262,23 +118,21 @@ def referral_channel_mask(df):
 
 def ai_search_channel_mask(df):
     return df["세션 소스/매체"].fillna("").astype(str).str.lower().str.contains(
-        r"gemini|gpt|perplexity", regex=True
-    )
-
+        r"gemini|gpt|perplexity", regex=True)
 
 def classify_organic(s):
     s = str(s).lower()
-    if "google" in s:    return "Google"
-    if "naver" in s:     return "Naver"
-    if "daum" in s:      return "Daum"
-    if "bing" in s:      return "Bing"
+    if "google" in s: return "Google"
+    if "naver"  in s: return "Naver"
+    if "daum"   in s: return "Daum"
+    if "bing"   in s: return "Bing"
     return "그외"
 
 def classify_referral(s):
     s = str(s).lower().strip()
-    if "tistory" in s:   return "커뮤니티·콘텐츠"
+    if "tistory" in s: return "커뮤니티·콘텐츠"
     if any(k in s for k in KT_OWNED_KEYWORDS): return "KT·자사"
-    if "naver" in s:     return "네이버"
+    if "naver" in s: return "네이버"
     if any(x in s for x in ("kakaochannel", "kakao.com", ".kakao.com", "daum.net", ".daum.net")):
         return "카카오"
     if any(k in s for k in COMMUNITY_CONTENT_KEYWORDS): return "커뮤니티·콘텐츠"
@@ -286,127 +140,172 @@ def classify_referral(s):
 
 def classify_ai_search(s):
     s = str(s).lower()
-    if "gemini" in s:    return "Gemini"
-    if "gpt" in s:       return "ChatGPT"
+    if "gemini"    in s: return "Gemini"
+    if "gpt"       in s: return "ChatGPT"
     if "perplexity" in s: return "Perplexity"
     return "그외"
 
 
 # ── 집계 ──────────────────────────────────────────────────────────────────────
-def aggregate_ga4(
-    total_user_df, metric_df,
-    channel_mask_func, classify_func, order,
-    exclude_keywords=EXCLUDE_SOURCE_MEDIUM_KEYWORDS,
-):
-    total_user_df = normalize_df(total_user_df)
-    metric_df     = normalize_df(metric_df)
-    validate_input(total_user_df, metric_df)
+def aggregate_ga4(fmt, df_a, df_b, channel_mask_func, classify_func, order,
+                  exclude_keywords=EXCLUDE_SOURCE_MEDIUM_KEYWORDS, detail=False):
+    """
+    fmt=="new": df_a=combined(세션수+총사용자), df_b=event(주요이벤트)
+    fmt=="old": df_a=total_user_df, df_b=metric_df (각각 이벤트이름 포함)
+    detail=True 이면 [구분, 세션소스/매체] 단위로 집계
+    """
+    df_a = normalize_df(df_a)
+    df_b = normalize_df(df_b)
 
-    user_base = total_user_df[
-        channel_mask_func(total_user_df)
-        & exact_not_excluded_mask(total_user_df, exclude_keywords)
-        & total_user_df["이벤트 이름"].str.lower().eq("session_start")
-    ].copy()
+    grp_cols = ["구분", "세션 소스/매체"] if detail else ["구분"]
 
-    metric_base = metric_df[
-        channel_mask_func(metric_df)
-        & exact_not_excluded_mask(metric_df, exclude_keywords)
-    ].copy()
+    if fmt == "new":
+        combined = df_a[channel_mask_func(df_a) & exact_not_excluded_mask(df_a, exclude_keywords)].copy()
+        events   = df_b[channel_mask_func(df_b) & exact_not_excluded_mask(df_b, exclude_keywords)].copy()
 
-    user_base["구분"]   = user_base["세션 소스/매체"].apply(classify_func)
-    metric_base["구분"] = metric_base["세션 소스/매체"].apply(classify_func)
+        combined["구분"] = combined["세션 소스/매체"].apply(classify_func)
+        events["구분"]   = events["세션 소스/매체"].apply(classify_func)
 
-    total_users = (
-        user_base.groupby("구분", dropna=False)["총 사용자"]
-        .sum().rename("총사용자")
-    )
-    sessions = (
-        metric_base[metric_base["이벤트 이름"].str.lower().eq("session_start")]
-        .groupby("구분", dropna=False)["세션수"]
-        .sum().rename("세션수=session_start")
-    )
-    start_events = (
-        metric_base[metric_base["이벤트 이름"].str.contains("작성_시작", na=False)]
-        .groupby("구분", dropna=False)["세션수"]
-        .sum().rename("작성_시작 포함 이벤트수")
-    )
-    complete_events = (
-        metric_base[metric_base["이벤트 이름"].str.contains("작성_완료", na=False)]
-        .groupby("구분", dropna=False)["세션수"]
-        .sum().rename("작성_완료 포함 이벤트수")
-    )
+        total_users = combined.groupby(grp_cols, dropna=False)["총 사용자"].sum().rename(COL_USERS)
+        sessions    = combined.groupby(grp_cols, dropna=False)["세션수"].sum().rename(COL_SESSIONS)
+        start_ev    = (
+            events[events[EVENT_COL].str.contains("작성_시작", na=False)]
+            .groupby(grp_cols, dropna=False)["주요 이벤트"].sum().rename(COL_START)
+        )
+        complete_ev = (
+            events[events[EVENT_COL].str.contains("작성_완료", na=False)]
+            .groupby(grp_cols, dropna=False)["주요 이벤트"].sum().rename(COL_COMPLETE)
+        )
 
-    result = pd.concat([total_users, sessions, start_events, complete_events], axis=1)
-    result = result.reindex(order).fillna(0).astype(int)
-    result.loc["합계"] = result.sum(numeric_only=True)
-    return result.reset_index().rename(columns={"index": "구분"})
+    else:  # old
+        user_base = df_a[
+            channel_mask_func(df_a)
+            & exact_not_excluded_mask(df_a, exclude_keywords)
+            & df_a[EVENT_COL].str.lower().eq("session_start")
+        ].copy()
+        metric_base = df_b[
+            channel_mask_func(df_b)
+            & exact_not_excluded_mask(df_b, exclude_keywords)
+        ].copy()
 
+        user_base["구분"]   = user_base["세션 소스/매체"].apply(classify_func)
+        metric_base["구분"] = metric_base["세션 소스/매체"].apply(classify_func)
 
-def aggregate_ga4_detail(
-    total_user_df, metric_df,
-    channel_mask_func, classify_func,
-    exclude_keywords=EXCLUDE_SOURCE_MEDIUM_KEYWORDS,
-):
-    """[구분, 세션 소스/매체] 단위 상세 집계."""
-    total_user_df = normalize_df(total_user_df)
-    metric_df     = normalize_df(metric_df)
+        total_users = user_base.groupby(grp_cols, dropna=False)["총 사용자"].sum().rename(COL_USERS)
+        sessions    = (
+            metric_base[metric_base[EVENT_COL].str.lower().eq("session_start")]
+            .groupby(grp_cols, dropna=False)["세션수"].sum().rename(COL_SESSIONS)
+        )
+        start_ev    = (
+            metric_base[metric_base[EVENT_COL].str.contains("작성_시작", na=False)]
+            .groupby(grp_cols, dropna=False)["세션수"].sum().rename(COL_START)
+        )
+        complete_ev = (
+            metric_base[metric_base[EVENT_COL].str.contains("작성_완료", na=False)]
+            .groupby(grp_cols, dropna=False)["세션수"].sum().rename(COL_COMPLETE)
+        )
 
-    user_base = total_user_df[
-        channel_mask_func(total_user_df)
-        & exact_not_excluded_mask(total_user_df, exclude_keywords)
-        & total_user_df["이벤트 이름"].str.lower().eq("session_start")
-    ].copy()
+    result = pd.concat([total_users, sessions, start_ev, complete_ev], axis=1)
 
-    metric_base = metric_df[
-        channel_mask_func(metric_df)
-        & exact_not_excluded_mask(metric_df, exclude_keywords)
-    ].copy()
-
-    user_base["구분"]   = user_base["세션 소스/매체"].apply(classify_func)
-    metric_base["구분"] = metric_base["세션 소스/매체"].apply(classify_func)
-
-    grp = ["구분", "세션 소스/매체"]
-
-    total_users = (
-        user_base.groupby(grp, dropna=False)["총 사용자"]
-        .sum().rename("총사용자")
-    )
-    sessions = (
-        metric_base[metric_base["이벤트 이름"].str.lower().eq("session_start")]
-        .groupby(grp, dropna=False)["세션수"]
-        .sum().rename("세션수=session_start")
-    )
-    start_events = (
-        metric_base[metric_base["이벤트 이름"].str.contains("작성_시작", na=False)]
-        .groupby(grp, dropna=False)["세션수"]
-        .sum().rename("작성_시작 포함 이벤트수")
-    )
-    complete_events = (
-        metric_base[metric_base["이벤트 이름"].str.contains("작성_완료", na=False)]
-        .groupby(grp, dropna=False)["세션수"]
-        .sum().rename("작성_완료 포함 이벤트수")
-    )
-
-    result = pd.concat([total_users, sessions, start_events, complete_events], axis=1)
-    result = result.fillna(0).astype(int).reset_index()
-    return result.sort_values(["구분", "총사용자"], ascending=[True, False]).reset_index(drop=True)
+    if detail:
+        result = result.fillna(0).astype(int).reset_index()
+        return result.sort_values(["구분", COL_USERS], ascending=[True, False]).reset_index(drop=True)
+    else:
+        result = result.reindex(order).fillna(0).astype(int)
+        result.loc["합계"] = result.sum(numeric_only=True)
+        return result.reset_index().rename(columns={"index": "구분"})
 
 
-def make_result(total_user_df, metric_df, exclude_keywords=EXCLUDE_SOURCE_MEDIUM_KEYWORDS):
-    total_user_df, metric_df = auto_detect_files(
-        normalize_df(total_user_df), normalize_df(metric_df)
-    )
-    kw = dict(total_user_df=total_user_df, metric_df=metric_df, exclude_keywords=exclude_keywords)
+def make_result(dfs: list[pd.DataFrame], exclude_keywords=EXCLUDE_SOURCE_MEDIUM_KEYWORDS):
+    fmt, df_a, df_b = detect_data_format(dfs)
+    kw = dict(fmt=fmt, df_a=df_a, df_b=df_b, exclude_keywords=exclude_keywords)
+
+    def agg(mask, cls, order, detail=False):
+        return aggregate_ga4(**kw, channel_mask_func=mask, classify_func=cls, order=order, detail=detail)
+
     return {
-        "Organic Search":            aggregate_ga4(**kw, channel_mask_func=organic_channel_mask,  classify_func=classify_organic,   order=ORGANIC_ORDER),
-        "Organic Search_detail":     aggregate_ga4_detail(**kw, channel_mask_func=organic_channel_mask,  classify_func=classify_organic),
-        "Referral_OS_Unassigned":    aggregate_ga4(**kw, channel_mask_func=referral_channel_mask, classify_func=classify_referral,  order=REFERRAL_ORDER),
-        "Referral_OS_Unassigned_detail": aggregate_ga4_detail(**kw, channel_mask_func=referral_channel_mask, classify_func=classify_referral),
-        "AI Search":                 aggregate_ga4(**kw, channel_mask_func=ai_search_channel_mask, classify_func=classify_ai_search, order=AI_SEARCH_ORDER),
-        "AI Search_detail":          aggregate_ga4_detail(**kw, channel_mask_func=ai_search_channel_mask, classify_func=classify_ai_search),
+        "Organic Search":              agg(organic_channel_mask,   classify_organic,    ORGANIC_ORDER),
+        "Organic Search_detail":       agg(organic_channel_mask,   classify_organic,    ORGANIC_ORDER,  detail=True),
+        "Referral_OS_Unassigned":      agg(referral_channel_mask,  classify_referral,   REFERRAL_ORDER),
+        "Referral_OS_Unassigned_detail": agg(referral_channel_mask, classify_referral,  REFERRAL_ORDER, detail=True),
+        "AI Search":                   agg(ai_search_channel_mask, classify_ai_search,  AI_SEARCH_ORDER),
+        "AI Search_detail":            agg(ai_search_channel_mask, classify_ai_search,  AI_SEARCH_ORDER, detail=True),
     }
 
 
+# ── GA4 API (OAuth) ───────────────────────────────────────────────────────────
+def fetch_ga4_data_oauth(credentials, property_id: str, start_date: str, end_date: str):
+    """
+    신형 형식으로 두 보고서 반환:
+      combined_df : 세션수 + 총사용자  (이벤트 차원 없음)
+      event_df    : 주요이벤트         (이벤트 이름 포함)
+    """
+    from google.analytics.data_v1beta import BetaAnalyticsDataClient
+    from google.analytics.data_v1beta.types import (
+        DateRange, Dimension, Filter, FilterExpression,
+        FilterExpressionList, Metric, RunReportRequest,
+    )
+
+    client     = BetaAnalyticsDataClient(credentials=credentials)
+    prop       = f"properties/{property_id}"
+    date_range = DateRange(start_date=start_date, end_date=end_date)
+
+    base_dims = [
+        Dimension(name="date"),
+        Dimension(name="sessionDefaultChannelGroup"),
+        Dimension(name="sessionSourceMedium"),
+        Dimension(name="deviceCategory"),
+    ]
+
+    # ① combined: sessions + totalUsers (이벤트 차원·필터 없음)
+    combined_req = RunReportRequest(
+        property=prop, date_ranges=[date_range],
+        dimensions=base_dims,
+        metrics=[Metric(name="sessions"), Metric(name="totalUsers")],
+        limit=100000,
+    )
+
+    # ② event: keyEvents (작성_시작 / 작성_완료 이벤트)
+    event_req = RunReportRequest(
+        property=prop, date_ranges=[date_range],
+        dimensions=base_dims + [Dimension(name="eventName")],
+        metrics=[Metric(name="keyEvents")],
+        dimension_filter=FilterExpression(filter=Filter(
+            field_name="eventName",
+            string_filter=Filter.StringFilter(
+                match_type=Filter.StringFilter.MatchType.PARTIAL_REGEXP,
+                value="가입신청서|유심_배송신청서",
+            ),
+        )),
+        limit=100000,
+    )
+
+    def to_df(response, metric_cols):
+        dim_n = len(response.dimension_headers)
+        rows  = [
+            [d.value for d in row.dimension_values] + [m.value for m in row.metric_values]
+            for row in response.rows
+        ]
+        dim_names = [h.name for h in response.dimension_headers]
+        col_map = {
+            "date": "date",
+            "sessionDefaultChannelGroup": "세션 기본 채널 그룹",
+            "sessionSourceMedium": "세션 소스/매체",
+            "deviceCategory": "기기 카테고리",
+            "eventName": "이벤트 이름",
+        }
+        cols = [col_map.get(n, n) for n in dim_names] + metric_cols
+        df   = pd.DataFrame(rows, columns=cols)
+        for c in metric_cols:
+            df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0).astype(int)
+        return df
+
+    combined_df = to_df(client.run_report(combined_req), ["세션수", "총 사용자"])
+    event_df    = to_df(client.run_report(event_req),    ["주요 이벤트"])
+    return combined_df, event_df
+
+
+# ── 엑셀 ──────────────────────────────────────────────────────────────────────
 def to_excel_bytes(results):
     output = BytesIO()
     with pd.ExcelWriter(output, engine="openpyxl") as writer:
@@ -414,7 +313,6 @@ def to_excel_bytes(results):
             if not name.endswith("_detail"):
                 df.to_excel(writer, sheet_name=name[:31], index=False)
     return output.getvalue()
-
 
 def detail_excel_bytes(df: pd.DataFrame) -> bytes:
     output = BytesIO()
@@ -426,7 +324,7 @@ def detail_excel_bytes(df: pd.DataFrame) -> bytes:
 # ── Streamlit UI 헬퍼 ─────────────────────────────────────────────────────────
 def copy_button(df: pd.DataFrame, key: str):
     import streamlit.components.v1 as components
-    tsv = df.to_csv(index=False, sep="\t").replace("`", "\\`")
+    tsv = df.to_csv(index=False, sep="\t").replace("`", "'")
     components.html(
         f"""<button onclick="
             navigator.clipboard.writeText(`{tsv}`).then(() => {{
@@ -441,17 +339,17 @@ def copy_button(df: pd.DataFrame, key: str):
 
 def copy_8rows_button(organic_df: pd.DataFrame, referral_df: pd.DataFrame):
     import streamlit.components.v1 as components
-    cols = ["총사용자", "세션수=session_start", "작성_시작 포함 이벤트수", "작성_완료 포함 이벤트수"]
+    cols = [COL_USERS, COL_SESSIONS, COL_START, COL_COMPLETE]
 
     def total_vals(df):
         row = df[df["구분"] == "합계"]
         return [int(row.iloc[0][c]) if not row.empty else 0 for c in cols]
 
-    vals = total_vals(organic_df) + total_vals(referral_df)
-    text = "\n".join(str(v) for v in vals).replace("`", "\\`")
+    vals   = total_vals(organic_df) + total_vals(referral_df)
+    text   = "\n".join(str(v) for v in vals).replace("`", "'")
     labels = [
         "Organic 총사용자", "Organic 세션수", "Organic 작성시작", "Organic 작성완료",
-        "Referral 총사용자", "Referral 세션수", "Referral 작성시작", "Referral 작성완료",
+        "Referral 총사용자","Referral 세션수","Referral 작성시작","Referral 작성완료",
     ]
     preview = "  /  ".join(f"{l}: {v}" for l, v in zip(labels, vals))
     components.html(
@@ -469,24 +367,14 @@ def copy_8rows_button(organic_df: pd.DataFrame, referral_df: pd.DataFrame):
 
 
 def copy_all_button(results: dict):
-    """3개 표 전체를 표 이름 포함해서 한 번에 복사."""
     import streamlit.components.v1 as components
-
     sections = [
-        ("Organic Search",                results["Organic Search"]),
+        ("Organic Search",                    results["Organic Search"]),
         ("Referral / Organic Social / Unassigned", results["Referral_OS_Unassigned"]),
         ("AI Search (ChatGPT / Gemini / Perplexity)", results["AI Search"]),
     ]
-
-    blocks = []
-    for label, df in sections:
-        tsv = df.to_csv(index=False, sep="\t")
-        blocks.append(f"[ {label} ]\n{tsv}")
-
-    combined = "\n\n".join(blocks).replace("`", "\\`").replace("\\", "\\\\").replace("`", "\\`")
-    # 역슬래시 이중 처리 없이 단순하게
-    combined = "\n\n".join(blocks).replace("`", "'")
-
+    combined = "\n\n".join(f"[ {lbl} ]\n{df.to_csv(index=False, sep=chr(9))}" for lbl, df in sections)
+    combined = combined.replace("`", "'")
     components.html(
         f"""<button onclick="
             navigator.clipboard.writeText(`{combined}`).then(() => {{
@@ -501,7 +389,6 @@ def copy_all_button(results: dict):
 
 
 def show_results(results: dict, st, key_prefix: str = ""):
-    """집계 결과를 화면에 출력하는 공통 함수."""
     copy_all_button(results)
     st.divider()
 
@@ -511,13 +398,11 @@ def show_results(results: dict, st, key_prefix: str = ""):
     with col1:
         copy_button(results["Organic Search"], key=f"{key_prefix}organic")
     with col2:
-        st.download_button(
-            "📥 상세 데이터 다운로드",
+        st.download_button("📥 상세 데이터 다운로드",
             data=detail_excel_bytes(results["Organic Search_detail"]),
             file_name="organic_search_detail.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            key=f"{key_prefix}dl_organic_detail",
-        )
+            key=f"{key_prefix}dl_organic_detail")
 
     st.subheader("Referral / Organic Social / Unassigned")
     st.dataframe(results["Referral_OS_Unassigned"], use_container_width=True)
@@ -525,13 +410,11 @@ def show_results(results: dict, st, key_prefix: str = ""):
     with col1:
         copy_button(results["Referral_OS_Unassigned"], key=f"{key_prefix}referral")
     with col2:
-        st.download_button(
-            "📥 상세 데이터 다운로드",
+        st.download_button("📥 상세 데이터 다운로드",
             data=detail_excel_bytes(results["Referral_OS_Unassigned_detail"]),
             file_name="referral_detail.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            key=f"{key_prefix}dl_referral_detail",
-        )
+            key=f"{key_prefix}dl_referral_detail")
 
     st.divider()
     st.markdown("**Organic + Referral 합계 8행 복사**")
@@ -545,21 +428,17 @@ def show_results(results: dict, st, key_prefix: str = ""):
     with col1:
         copy_button(results["AI Search"], key=f"{key_prefix}ai")
     with col2:
-        st.download_button(
-            "📥 상세 데이터 다운로드",
+        st.download_button("📥 상세 데이터 다운로드",
             data=detail_excel_bytes(results["AI Search_detail"]),
             file_name="ai_search_detail.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            key=f"{key_prefix}dl_ai_detail",
-        )
+            key=f"{key_prefix}dl_ai_detail")
 
-    excel_bytes = to_excel_bytes(results)
-    st.download_button(
-        label="결과 Excel 다운로드",
-        data=excel_bytes,
+    st.download_button("결과 Excel 다운로드",
+        data=to_excel_bytes(results),
         file_name="ga4_media_aggregate_result.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-    )
+        key=f"{key_prefix}dl_excel")
 
 
 # ── Streamlit 메인 ────────────────────────────────────────────────────────────
@@ -569,59 +448,42 @@ def run_streamlit():
     st.set_page_config(page_title="GA4 매체 자동 집계", layout="wide")
     st.title("GA4 매체 자동 집계")
 
-    # 제외 필터 (공통)
+    # ── 제외 필터 (공통) ──────────────────────────────────────────────────────
     with st.expander("세션 소스/매체 제외 필터 설정", expanded=False):
         use_filter = st.checkbox("제외 필터 사용", value=True)
         raw_kw = st.text_area(
             "제외 키워드 (한 줄에 하나씩)",
             value="\n".join(EXCLUDE_SOURCE_MEDIUM_KEYWORDS),
-            height=110,
-            disabled=not use_filter,
+            height=90, disabled=not use_filter,
             help="세션 소스/매체에 해당 키워드가 포함된 행을 제외합니다.",
         )
         exclude_keywords = (
-            [k.strip() for k in raw_kw.splitlines() if k.strip()]
-            if use_filter else []
+            [k.strip() for k in raw_kw.splitlines() if k.strip()] if use_filter else []
         )
 
     tab_file, tab_api = st.tabs(["📁 파일 업로드", "🔗 GA4 API 연동"])
 
     # ── 탭 1: 파일 업로드 ─────────────────────────────────────────────────────
     with tab_file:
+        st.caption(
+            "**신형** (권장): ① 세션수+총사용자 파일  +  ② 주요이벤트 파일\n\n"
+            "**구형**: ① 총사용자(이벤트이름 포함) 파일  +  ② 세션수(이벤트이름 포함) 파일\n\n"
+            "날짜별 여러 쌍 업로드 시 같은 타입끼리 자동 합산합니다."
+        )
         uploaded = st.file_uploader(
-            "총 사용자 CSV + 세션수 CSV를 날짜별로 여러 쌍 업로드 (짝수개)",
-            type=["csv"],
-            accept_multiple_files=True,
-            key="file_uploader",
+            "CSV 파일 업로드 (2개 이상)",
+            type=["csv"], accept_multiple_files=True, key="file_uploader",
         )
 
         if not uploaded:
             st.info("CSV 파일을 업로드하면 집계 결과가 표시됩니다.")
-        elif len(uploaded) % 2 != 0:
-            st.warning(f"파일은 짝수개로 업로드해야 합니다. 현재: {len(uploaded)}개")
+        elif len(uploaded) < 2:
+            st.warning("최소 2개 파일을 업로드해야 합니다.")
         else:
             try:
                 dfs = [read_csv_safely(f) for f in uploaded]
-                user_dfs, metric_dfs = [], []
-                for df in dfs:
-                    if "총 사용자" in df.columns:
-                        user_dfs.append(df)
-                    elif "세션수" in df.columns:
-                        metric_dfs.append(df)
-                    else:
-                        raise ValueError("'총 사용자' 또는 '세션수' 컬럼이 없는 파일이 있습니다.")
-
-                if not user_dfs:
-                    raise ValueError("'총 사용자' 파일이 없습니다.")
-                if not metric_dfs:
-                    raise ValueError("'세션수' 파일이 없습니다.")
-
-                st.info(f"📂 총사용자 {len(user_dfs)}개 · 세션수 {len(metric_dfs)}개 합산")
-                results = make_result(
-                    pd.concat(user_dfs, ignore_index=True),
-                    pd.concat(metric_dfs, ignore_index=True),
-                    exclude_keywords=exclude_keywords,
-                )
+                results = make_result(dfs, exclude_keywords=exclude_keywords)
+                st.info(f"📂 파일 {len(uploaded)}개 처리 완료")
                 show_results(results, st, key_prefix="file_")
             except Exception as e:
                 st.error(str(e))
@@ -640,32 +502,27 @@ def run_streamlit():
             st.error("Secrets에 GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET 가 설정되지 않았습니다.")
             st.stop()
 
-        # ── 날짜 & Property ID ───────────────────────────────────────────────
         col_l, col_r = st.columns([1, 1])
         with col_l:
             property_id = st.text_input(
-                "GA4 Property ID",
-                value=str(secret_prop_id),
-                placeholder="예: 123456789",
-                help="GA4 관리 → 속성 → 속성 ID (숫자)",
+                "GA4 Property ID", value=str(secret_prop_id),
+                placeholder="예: 123456789", help="GA4 관리 → 속성 → 속성 ID (숫자)",
             )
         with col_r:
             today      = datetime.date.today()
             start_date = st.date_input("시작일", value=today.replace(day=1))
             end_date   = st.date_input("종료일", value=today)
 
-        # ── Google OAuth 로그인 ──────────────────────────────────────────────
         oauth2 = OAuth2Component(
-            client_id=client_id,
-            client_secret=client_secret,
+            client_id=client_id, client_secret=client_secret,
             authorize_endpoint="https://accounts.google.com/o/oauth2/v2/auth",
             token_endpoint="https://oauth2.googleapis.com/token",
             refresh_token_endpoint="https://oauth2.googleapis.com/token",
             revoke_token_endpoint="https://oauth2.googleapis.com/revoke",
         )
 
-        # 이미 로그인된 경우 authorize_button 호출 자체를 건너뜀
-        access_token = (st.session_state.get("oauth_token") or {}).get("access_token")
+        access_token  = (st.session_state.get("oauth_token") or {}).get("access_token")
+        refresh_token = (st.session_state.get("oauth_token") or {}).get("refresh_token")
 
         if not access_token:
             try:
@@ -674,62 +531,53 @@ def run_streamlit():
                     redirect_uri=st.secrets.get("REDIRECT_URI", "http://localhost:8501"),
                     scope="https://www.googleapis.com/auth/analytics.readonly",
                     extras_params={"access_type": "offline", "prompt": "consent"},
-                    key="google_oauth",
-                    use_container_width=False,
+                    key="google_oauth", use_container_width=False,
                 )
                 if token_result and "token" in token_result:
                     st.session_state["oauth_token"] = token_result["token"]
                     st.rerun()
             except Exception:
-                stale_keys = [k for k in st.session_state if any(
-                    x in k.lower() for x in ("state", "code", "google_oauth")
-                )]
-                for k in stale_keys:
+                stale = [k for k in st.session_state if any(
+                    x in k.lower() for x in ("state", "code", "google_oauth"))]
+                for k in stale:
                     del st.session_state[k]
                 st.warning("로그인 세션이 만료되었습니다. 다시 로그인해주세요.")
                 st.rerun()
 
-        access_token = (st.session_state.get("oauth_token") or {}).get("access_token")
+        access_token  = (st.session_state.get("oauth_token") or {}).get("access_token")
         refresh_token = (st.session_state.get("oauth_token") or {}).get("refresh_token")
 
         if access_token:
-            col_status, col_logout = st.columns([4, 1])
-            with col_status:
+            col_s, col_lo = st.columns([4, 1])
+            with col_s:
                 st.success("✅ Google 로그인 완료")
-            with col_logout:
+            with col_lo:
                 if st.button("로그아웃", key="logout_btn"):
                     del st.session_state["oauth_token"]
                     st.rerun()
 
-            fetch_btn = st.button(
-                "📡 데이터 가져오기", type="primary",
-                disabled=not property_id,
-            )
-
-            if fetch_btn:
+            if st.button("📡 데이터 가져오기", type="primary", disabled=not property_id):
                 if start_date > end_date:
                     st.error("시작일이 종료일보다 늦습니다.")
                 else:
                     try:
                         with st.spinner("GA4 API 호출 중…"):
                             creds = OAuthCredentials(
-                                token=access_token,
-                                refresh_token=refresh_token,
+                                token=access_token, refresh_token=refresh_token,
                                 token_uri="https://oauth2.googleapis.com/token",
-                                client_id=client_id,
-                                client_secret=client_secret,
+                                client_id=client_id, client_secret=client_secret,
                             )
-                            users_df, sessions_df = fetch_ga4_data_oauth(
+                            combined_df, event_df = fetch_ga4_data_oauth(
                                 credentials=creds,
                                 property_id=str(property_id).strip(),
                                 start_date=start_date.strftime("%Y-%m-%d"),
                                 end_date=end_date.strftime("%Y-%m-%d"),
                             )
                         st.session_state["api_results"] = make_result(
-                            users_df, sessions_df, exclude_keywords=exclude_keywords
+                            [combined_df, event_df], exclude_keywords=exclude_keywords
                         )
                         st.session_state["api_results_info"] = (
-                            f"총사용자 {len(users_df):,}행 · 세션수 {len(sessions_df):,}행 수신 완료"
+                            f"combined {len(combined_df):,}행 · event {len(event_df):,}행 수신 완료"
                         )
                     except Exception as e:
                         err = str(e)
@@ -750,17 +598,18 @@ def run_streamlit():
 # ── CLI ───────────────────────────────────────────────────────────────────────
 def run_cli():
     if len(sys.argv) < 4:
-        print("사용법: python app.py 총사용자.csv 세션수.csv 결과.xlsx")
+        print("사용법: python app.py 파일A.csv 파일B.csv 결과.xlsx")
         sys.exit(1)
-    df1 = read_csv_safely(sys.argv[1])
-    df2 = read_csv_safely(sys.argv[2])
-    results = make_result(df1, df2)
-    with pd.ExcelWriter(sys.argv[3], engine="openpyxl") as writer:
+    dfs = [read_csv_safely(f) for f in sys.argv[1:-1]]
+    results = make_result(dfs)
+    with pd.ExcelWriter(sys.argv[-1], engine="openpyxl") as writer:
         for name, df in results.items():
-            df.to_excel(writer, sheet_name=name[:31], index=False)
-    print(f"완료: {sys.argv[3]}")
+            if not name.endswith("_detail"):
+                df.to_excel(writer, sheet_name=name[:31], index=False)
+    print(f"완료: {sys.argv[-1]}")
     for name, df in results.items():
-        print(f"\n[{name}]\n{df.to_string(index=False)}")
+        if not name.endswith("_detail"):
+            print(f"\n[{name}]\n{df.to_string(index=False)}")
 
 
 if __name__ == "__main__":
