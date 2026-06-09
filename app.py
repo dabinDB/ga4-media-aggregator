@@ -339,7 +339,9 @@ def detail_excel_bytes(df: pd.DataFrame) -> bytes:
 # ── Streamlit UI 헬퍼 ─────────────────────────────────────────────────────────
 def copy_button(df: pd.DataFrame, key: str):
     import streamlit.components.v1 as components
-    tsv = df.to_csv(index=False, sep="\t").replace("`", "'")
+    # 헤더·합계 제외, 데이터 행만
+    data_only = df[df["구분"] != "합계"]
+    tsv = data_only.to_csv(index=False, sep="\t", header=False).replace("`", "'")
     components.html(
         f"""<button onclick="
             navigator.clipboard.writeText(`{tsv}`).then(() => {{
@@ -388,7 +390,10 @@ def copy_all_button(results: dict):
         ("Referral / Organic Social / Unassigned", results["Referral_OS_Unassigned"]),
         ("AI Search (ChatGPT / Gemini / Perplexity)", results["AI Search"]),
     ]
-    combined = "\n\n".join(f"[ {lbl} ]\n{df.to_csv(index=False, sep=chr(9))}" for lbl, df in sections)
+    combined = "\n\n".join(
+        f"[ {lbl} ]\n{df[df['구분'] != '합계'].to_csv(index=False, sep=chr(9), header=False)}"
+        for lbl, df in sections
+    )
     combined = combined.replace("`", "'")
     components.html(
         f"""<button onclick="
