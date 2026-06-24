@@ -31,11 +31,32 @@ COMPLETE_EVENTS = [
 ]
 TARGET_EVENTS = START_EVENTS + COMPLETE_EVENTS
 
-ORGANIC_ORDER   = ["Google", "Naver", "Daum", "Bing", "그외"]
-REFERRAL_ORDER  = ["KT·자사", "네이버", "커뮤니티·콘텐츠", "카카오", "그외"]
-AI_SEARCH_ORDER = ["ChatGPT", "Gemini", "Perplexity"]
+# ── 1차 구분 분류 상수 ─────────────────────────────────────────────────────
+AI_GEO_SOURCES = [
+    "chatgpt", "gemini", "perplexity", "copilot", "claude.ai", "manus.im", "doubao",
+]
+SOCIAL_MEDIA_SOURCES = [
+    "facebook", "instagram", "l.instagram", "m.facebook", "l.facebook", "lm.facebook",
+    "t.co", "tiktok", "threads", "l.threads", "zalo", "pinterest",
+]
+NAVER_SEO_EXACT_SOURCES = ["naver.com", "m.naver.com"]
+NAVER_SEO_PARTIAL_SOURCES = [
+    "blog.naver", "m.blog.naver", "cafe.naver", "m.cafe.naver",
+    "kin.naver", "m.kin.naver", "blog.naverblogwidget", "m.search.naver.com",
+]
+NAVER_SEO_MEDIUMS = ["powercontents", "officialcafe", "blog_sp", "noticepost"]
 
-# 출력 컬럼명 (포맷 무관하게 동일)
+PAYMENT_AUTH_SOURCES = [
+    "mpay", "cert.", "checkplus", "orders.pay.naver", "nid.naver",
+    "ekyc.naver", "login.microsoft", "shinhancard",
+]
+
+# 테이블 행 정렬 순서
+ORGANIC_ORDER   = ["Google", "Naver", "Daum", "Bing", "그외"]
+SEO_REF_ORDER   = ["AI/GEO", "Naver검색·컨텐츠", "커뮤니티·콘텐츠", "그외"]
+BIYEONG_ORDER   = ["KT·자사", "PPL·광고", "CRM", "결제·인증", "보류·출처불명", "기타"]
+
+# 출력 컬럼명
 COL_USERS    = "총사용자"
 COL_SESSIONS = "세션수"
 COL_START    = "작성_시작 이벤트수"
@@ -131,10 +152,6 @@ def organic_channel_mask(df):
 def referral_channel_mask(df):
     return df["세션 기본 채널 그룹"].str.lower().isin({"referral", "organic social", "unassigned"})
 
-def ai_search_channel_mask(df):
-    return df["세션 소스/매체"].fillna("").astype(str).str.lower().str.contains(
-        r"gemini|gpt|perplexity", regex=True)
-
 def classify_organic(s):
     s = str(s).lower()
     if "google" in s: return "Google"
@@ -143,22 +160,92 @@ def classify_organic(s):
     if "bing"   in s: return "Bing"
     return "그외"
 
-def classify_referral(s):
-    s = str(s).lower().strip()
-    if "tistory" in s: return "커뮤니티·콘텐츠"
-    if any(k in s for k in KT_OWNED_KEYWORDS): return "KT·자사"
-    if "naver" in s: return "네이버"
-    if any(x in s for x in ("kakaochannel", "kakao.com", ".kakao.com", "daum.net", ".daum.net")):
-        return "카카오"
-    if any(k in s for k in COMMUNITY_CONTENT_KEYWORDS): return "커뮤니티·콘텐츠"
-    return "그외"
 
-def classify_ai_search(s):
-    s = str(s).lower()
-    if "gemini"    in s: return "Gemini"
-    if "gpt"       in s: return "ChatGPT"
-    if "perplexity" in s: return "Perplexity"
-    return "그외"
+def _parse_src_med(s: str):
+    s_lower = str(s).lower().strip()
+    parts = s_lower.split(" / ")
+    src = parts[0].strip()
+    med = parts[1].strip() if len(parts) > 1 else ""
+    return s_lower, src, med
+
+
+def classify_referral_seo(s) -> str | None:
+    """
+    SEO/GEO 연관 referral 행의 3차구분 반환.
+    비연관이면 None 반환.
+    """
+    s_lower, src, med = _parse_src_med(s)
+
+    # ── 먼저 비연관 패턴 차단 (community 키워드 오탐 방지) ──
+    if any(k in s_lower for k in KT_OWNED_KEYWORDS):
+        return None
+    if any(k in med for k in ["_ppl"]) or med in ["online_ad", "partner"]:
+        return None
+    if src == "crm":
+        return None
+    if any(x in src for x in PAYMENT_AUTH_SOURCES):
+        return None
+    if src in ["(not set)", "bit.ly"] or "localhost" in src or (src and src[0].isdigit()):
+        return None
+
+    # ── SEO/GEO 판단 ──
+    # AI/GEO
+    if any(x in src for x in AI_GEO_SOURCES):
+        return "AI/GEO"
+    # 카카오 전체 → 커뮤니티·콘텐츠
+    if "kakao" in src:
+        return "커뮤니티·콘텐츠"
+    # 소셜 미디어 → 커뮤니티·콘텐츠
+    if any(x in src for x in SOCIAL_MEDIA_SOURCES) or (src == "ig" and med == "social") or med in ["social", "instagram_sp", "page"]:
+        return "커뮤니티·콘텐츠"
+    # Naver 검색/컨텐츠 (blog_ppl 제외)
+    if "blog_ppl" not in med:
+        if "m.search.naver.com" in src or (src == "naver" and med in NAVER_SEO_MEDIUMS):
+            return "Naver검색·컨텐츠"
+        if any(x in src for x in NAVER_SEO_PARTIAL_SOURCES):
+            return "Naver검색·컨텐츠"
+        if src in NAVER_SEO_EXACT_SOURCES:
+            return "Naver검색·컨텐츠"
+        if src == "naver_blog" and med in ["blog_sp", "noticepost"]:
+            return "Naver검색·컨텐츠"
+    # 커뮤니티/정보성
+    if any(k in s_lower for k in COMMUNITY_CONTENT_KEYWORDS):
+        return "커뮤니티·콘텐츠"
+
+    return None  # 비연관
+
+
+def classify_referral_seo_safe(s) -> str:
+    return classify_referral_seo(s) or "그외"
+
+
+def classify_referral_biyeong(s) -> str:
+    """비연관·보류 referral 행의 3차구분 반환."""
+    s_lower, src, med = _parse_src_med(s)
+
+    if any(k in s_lower for k in KT_OWNED_KEYWORDS):
+        return "KT·자사"
+    if any(k in med for k in ["_ppl"]) or med in ["online_ad", "partner"]:
+        return "PPL·광고"
+    if src == "crm":
+        return "CRM"
+    if any(x in src for x in PAYMENT_AUTH_SOURCES):
+        return "결제·인증"
+    if src in ["(not set)", "bit.ly"] or "localhost" in src or (src and src[0].isdigit()):
+        return "보류·출처불명"
+    return "기타"
+
+
+def referral_seo_mask(df):
+    base = referral_channel_mask(df)
+    is_seo = df["세션 소스/매체"].apply(lambda s: classify_referral_seo(s) is not None)
+    return base & is_seo
+
+
+def referral_biyeong_mask(df):
+    base = referral_channel_mask(df)
+    is_biyeong = df["세션 소스/매체"].apply(lambda s: classify_referral_seo(s) is None)
+    return base & is_biyeong
 
 
 # ── 집계 ──────────────────────────────────────────────────────────────────────
@@ -239,22 +326,17 @@ def make_result(dfs: list[pd.DataFrame], exclude_keywords=EXCLUDE_SOURCE_MEDIUM_
         return aggregate_ga4(**kw, channel_mask_func=mask, classify_func=cls, order=order, detail=detail)
 
     return {
-        "Organic Search":              agg(organic_channel_mask,   classify_organic,    ORGANIC_ORDER),
-        "Organic Search_detail":       agg(organic_channel_mask,   classify_organic,    ORGANIC_ORDER,  detail=True),
-        "Referral_OS_Unassigned":      agg(referral_channel_mask,  classify_referral,   REFERRAL_ORDER),
-        "Referral_OS_Unassigned_detail": agg(referral_channel_mask, classify_referral,  REFERRAL_ORDER, detail=True),
-        "AI Search":                   agg(ai_search_channel_mask, classify_ai_search,  AI_SEARCH_ORDER),
-        "AI Search_detail":            agg(ai_search_channel_mask, classify_ai_search,  AI_SEARCH_ORDER, detail=True),
+        "Organic Search":         agg(organic_channel_mask,   classify_organic,            ORGANIC_ORDER),
+        "Organic Search_detail":  agg(organic_channel_mask,   classify_organic,            ORGANIC_ORDER, detail=True),
+        "SEO Referral":           agg(referral_seo_mask,      classify_referral_seo_safe,  SEO_REF_ORDER),
+        "SEO Referral_detail":    agg(referral_seo_mask,      classify_referral_seo_safe,  SEO_REF_ORDER, detail=True),
+        "비연관·보류":              agg(referral_biyeong_mask,  classify_referral_biyeong,   BIYEONG_ORDER),
+        "비연관·보류_detail":       agg(referral_biyeong_mask,  classify_referral_biyeong,   BIYEONG_ORDER, detail=True),
     }
 
 
 # ── GA4 API (OAuth) ───────────────────────────────────────────────────────────
 def fetch_ga4_data_oauth(credentials, property_id: str, start_date: str, end_date: str):
-    """
-    신형 형식으로 두 보고서 반환:
-      combined_df : 세션수 + 총사용자  (이벤트 차원 없음)
-      event_df    : 주요이벤트         (이벤트 이름 포함)
-    """
     from google.analytics.data_v1beta import BetaAnalyticsDataClient
     from google.analytics.data_v1beta.types import (
         DateRange, Dimension, Filter, FilterExpression,
@@ -272,7 +354,6 @@ def fetch_ga4_data_oauth(credentials, property_id: str, start_date: str, end_dat
         Dimension(name="deviceCategory"),
     ]
 
-    # ① combined: sessions + totalUsers (이벤트 차원·필터 없음)
     combined_req = RunReportRequest(
         property=prop, date_ranges=[date_range],
         dimensions=base_dims,
@@ -280,7 +361,6 @@ def fetch_ga4_data_oauth(credentials, property_id: str, start_date: str, end_dat
         limit=100000,
     )
 
-    # ② event: keyEvents (8개 이벤트 정확히 일치)
     event_req = RunReportRequest(
         property=prop, date_ranges=[date_range],
         dimensions=base_dims + [Dimension(name="eventName")],
@@ -296,12 +376,11 @@ def fetch_ga4_data_oauth(credentials, property_id: str, start_date: str, end_dat
     )
 
     def to_df(response, metric_cols):
-        dim_n = len(response.dimension_headers)
-        rows  = [
+        dim_names = [h.name for h in response.dimension_headers]
+        rows = [
             [d.value for d in row.dimension_values] + [m.value for m in row.metric_values]
             for row in response.rows
         ]
-        dim_names = [h.name for h in response.dimension_headers]
         col_map = {
             "date": "date",
             "sessionDefaultChannelGroup": "세션 기본 채널 그룹",
@@ -339,7 +418,6 @@ def detail_excel_bytes(df: pd.DataFrame) -> bytes:
 # ── Streamlit UI 헬퍼 ─────────────────────────────────────────────────────────
 def copy_button(df: pd.DataFrame, key: str):
     import streamlit.components.v1 as components
-    # 헤더·합계 제외, 데이터 행만
     data_only = df[df["구분"] != "합계"]
     tsv = data_only.to_csv(index=False, sep="\t", header=False).replace("`", "'")
     components.html(
@@ -354,7 +432,7 @@ def copy_button(df: pd.DataFrame, key: str):
     )
 
 
-def copy_8rows_button(organic_df: pd.DataFrame, referral_df: pd.DataFrame):
+def copy_8rows_button(organic_df: pd.DataFrame, seo_ref_df: pd.DataFrame):
     import streamlit.components.v1 as components
     cols = [COL_USERS, COL_SESSIONS, COL_START, COL_COMPLETE]
 
@@ -362,11 +440,11 @@ def copy_8rows_button(organic_df: pd.DataFrame, referral_df: pd.DataFrame):
         row = df[df["구분"] == "합계"]
         return [int(row.iloc[0][c]) if not row.empty else 0 for c in cols]
 
-    vals   = total_vals(organic_df) + total_vals(referral_df)
+    vals   = total_vals(organic_df) + total_vals(seo_ref_df)
     text   = "\n".join(str(v) for v in vals).replace("`", "'")
     labels = [
         "Organic 총사용자", "Organic 세션수", "Organic 작성시작", "Organic 작성완료",
-        "Referral 총사용자","Referral 세션수","Referral 작성시작","Referral 작성완료",
+        "SEO Referral 총사용자", "SEO Referral 세션수", "SEO Referral 작성시작", "SEO Referral 작성완료",
     ]
     preview = "  /  ".join(f"{l}: {v}" for l, v in zip(labels, vals))
     components.html(
@@ -374,11 +452,11 @@ def copy_8rows_button(organic_df: pd.DataFrame, referral_df: pd.DataFrame):
         <button onclick="
             navigator.clipboard.writeText(`{text}`).then(() => {{
                 this.textContent = '✅ 복사됨';
-                setTimeout(() => this.textContent = '📋 8행 세로 복사 (Organic+Referral 합계)', 2000);
+                setTimeout(() => this.textContent = '📋 8행 세로 복사 (Organic + SEO Referral 합계)', 2000);
             }});" style="padding:6px 16px;font-size:13px;cursor:pointer;
             border:1px solid #4a90d9;border-radius:6px;background:#e8f0fe;
             color:#1a56a0;font-weight:bold;">
-            📋 8행 세로 복사 (Organic+Referral 합계)</button>""",
+            📋 8행 세로 복사 (Organic + SEO Referral 합계)</button>""",
         height=60,
     )
 
@@ -386,9 +464,9 @@ def copy_8rows_button(organic_df: pd.DataFrame, referral_df: pd.DataFrame):
 def copy_all_button(results: dict):
     import streamlit.components.v1 as components
     sections = [
-        ("Organic Search",                    results["Organic Search"]),
-        ("Referral / Organic Social / Unassigned", results["Referral_OS_Unassigned"]),
-        ("AI Search (ChatGPT / Gemini / Perplexity)", results["AI Search"]),
+        ("SEO/GEO 연관 > Organic Search",          results["Organic Search"]),
+        ("SEO/GEO 연관 > Referral (AI/GEO·Naver·커뮤니티)", results["SEO Referral"]),
+        ("비연관·보류 > Referral",                  results["비연관·보류"]),
     ]
     combined = "\n\n".join(
         f"[ {lbl} ]\n{df[df['구분'] != '합계'].to_csv(index=False, sep=chr(9), header=False)}"
@@ -412,6 +490,9 @@ def show_results(results: dict, st, key_prefix: str = ""):
     copy_all_button(results)
     st.divider()
 
+    # ── SEO/GEO 연관 유입 ──────────────────────────────────────────────────
+    st.markdown("### 🟢 SEO/GEO 연관 유입")
+
     st.subheader("Organic Search")
     st.dataframe(results["Organic Search"], use_container_width=True)
     col1, col2 = st.columns([2, 1])
@@ -424,36 +505,41 @@ def show_results(results: dict, st, key_prefix: str = ""):
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             key=f"{key_prefix}dl_organic_detail")
 
-    st.subheader("Referral / Organic Social / Unassigned")
-    st.dataframe(results["Referral_OS_Unassigned"], use_container_width=True)
+    st.subheader("Referral (AI/GEO · Naver검색/컨텐츠 · 커뮤니티·콘텐츠)")
+    st.caption("Referral 채널 중 SEO/GEO 연관 유입 (AI 검색, 네이버 검색/블로그/카페, 커뮤니티, 소셜, 카카오)")
+    st.dataframe(results["SEO Referral"], use_container_width=True)
     col1, col2 = st.columns([2, 1])
     with col1:
-        copy_button(results["Referral_OS_Unassigned"], key=f"{key_prefix}referral")
+        copy_button(results["SEO Referral"], key=f"{key_prefix}seo_ref")
     with col2:
         st.download_button("📥 상세 데이터 다운로드",
-            data=detail_excel_bytes(results["Referral_OS_Unassigned_detail"]),
-            file_name="referral_detail.xlsx",
+            data=detail_excel_bytes(results["SEO Referral_detail"]),
+            file_name="seo_referral_detail.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            key=f"{key_prefix}dl_referral_detail")
+            key=f"{key_prefix}dl_seo_ref_detail")
 
     st.divider()
-    st.markdown("**Organic + Referral 합계 8행 복사**")
-    copy_8rows_button(results["Organic Search"], results["Referral_OS_Unassigned"])
-    st.divider()
+    st.markdown("**Organic + SEO Referral 합계 8행 복사**")
+    copy_8rows_button(results["Organic Search"], results["SEO Referral"])
 
-    st.subheader("AI Search (ChatGPT / Gemini / Perplexity)")
-    st.caption("세션 소스/매체에 gpt·gemini·perplexity 포함된 행 기준")
-    st.dataframe(results["AI Search"], use_container_width=True)
+    # ── 비연관·보류 ────────────────────────────────────────────────────────
+    st.divider()
+    st.markdown("### 🔴 비연관·보류")
+
+    st.subheader("Referral 비연관 (KT·자사 · PPL·광고 · CRM · 결제·인증 · 보류)")
+    st.caption("Referral 채널 중 SEO/GEO 비연관 유입 (자사, 광고운영, CRM, 결제/인증, 출처불명)")
+    st.dataframe(results["비연관·보류"], use_container_width=True)
     col1, col2 = st.columns([2, 1])
     with col1:
-        copy_button(results["AI Search"], key=f"{key_prefix}ai")
+        copy_button(results["비연관·보류"], key=f"{key_prefix}biyeong")
     with col2:
         st.download_button("📥 상세 데이터 다운로드",
-            data=detail_excel_bytes(results["AI Search_detail"]),
-            file_name="ai_search_detail.xlsx",
+            data=detail_excel_bytes(results["비연관·보류_detail"]),
+            file_name="biyeongwan_detail.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            key=f"{key_prefix}dl_ai_detail")
+            key=f"{key_prefix}dl_biyeong_detail")
 
+    st.divider()
     st.download_button("결과 Excel 다운로드",
         data=to_excel_bytes(results),
         file_name="ga4_media_aggregate_result.xlsx",
