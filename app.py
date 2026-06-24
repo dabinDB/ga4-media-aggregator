@@ -53,7 +53,7 @@ PAYMENT_AUTH_SOURCES = [
 
 # 테이블 행 정렬 순서
 ORGANIC_ORDER   = ["Google", "Naver", "Daum", "Bing", "그외"]
-SEO_REF_ORDER   = ["AI/GEO", "Naver검색·컨텐츠", "커뮤니티·콘텐츠", "그외"]
+SEO_REF_ORDER   = ["AI/GEO", "Naver검색·컨텐츠", "커뮤니티·콘텐츠", "카카오", "그외"]
 BIYEONG_ORDER   = ["KT·자사", "PPL·광고", "CRM", "결제·인증", "보류·출처불명", "기타"]
 
 # 출력 컬럼명
@@ -192,9 +192,9 @@ def classify_referral_seo(s) -> str | None:
     # AI/GEO
     if any(x in src for x in AI_GEO_SOURCES):
         return "AI/GEO"
-    # 카카오 전체 → 커뮤니티·콘텐츠
+    # 카카오 전체 → 별도 구분
     if "kakao" in src:
-        return "커뮤니티·콘텐츠"
+        return "카카오"
     # 소셜 미디어 → 커뮤니티·콘텐츠
     if any(x in src for x in SOCIAL_MEDIA_SOURCES) or (src == "ig" and med == "social") or med in ["social", "instagram_sp", "page"]:
         return "커뮤니티·콘텐츠"
@@ -416,6 +416,21 @@ def detail_excel_bytes(df: pd.DataFrame) -> bytes:
     return output.getvalue()
 
 
+# ── CVR 컬럼 추가 ─────────────────────────────────────────────────────────────
+def add_cvr(df: pd.DataFrame) -> pd.DataFrame:
+    """합계 포함 전 행에 CVR1·CVR2 컬럼 추가 후 컬럼 순서 재정렬."""
+    df = df.copy()
+
+    def pct(num, den):
+        return f"{num / den * 100:.1f}%" if den > 0 else "-"
+
+    df["CVR1"] = df.apply(lambda r: pct(r[COL_START],    r[COL_SESSIONS]), axis=1)
+    df["CVR2"] = df.apply(lambda r: pct(r[COL_COMPLETE], r[COL_START]),    axis=1)
+
+    cols = ["구분", COL_USERS, COL_SESSIONS, COL_START, "CVR1", COL_COMPLETE, "CVR2"]
+    return df[cols]
+
+
 # ── Streamlit UI 헬퍼 ─────────────────────────────────────────────────────────
 def copy_button(df: pd.DataFrame, key: str):
     import streamlit.components.v1 as components
@@ -465,9 +480,9 @@ def copy_8rows_button(organic_df: pd.DataFrame, seo_ref_df: pd.DataFrame):
 def copy_all_button(results: dict):
     import streamlit.components.v1 as components
     sections = [
-        ("SEO/GEO 연관 > Organic Search",          results["Organic Search"]),
-        ("SEO/GEO 연관 > Referral (AI/GEO·Naver·커뮤니티)", results["SEO Referral"]),
-        ("비연관·보류 > Referral",                  results["비연관·보류"]),
+        ("SEO/GEO 연관 > Organic Search",          add_cvr(results["Organic Search"])),
+        ("SEO/GEO 연관 > Referral (AI/GEO·Naver·커뮤니티·카카오)", add_cvr(results["SEO Referral"])),
+        ("비연관·보류 > Referral",                  add_cvr(results["비연관·보류"])),
     ]
     combined = "\n\n".join(
         f"[ {lbl} ]\n{df[df['구분'] != '합계'].to_csv(index=False, sep=chr(9), header=False)}"
@@ -494,11 +509,15 @@ def show_results(results: dict, st, key_prefix: str = ""):
     # ── SEO/GEO 연관 유입 ──────────────────────────────────────────────────
     st.markdown("### 🟢 SEO/GEO 연관 유입")
 
+    os_df     = add_cvr(results["Organic Search"])
+    seo_df    = add_cvr(results["SEO Referral"])
+    biyeong_df = add_cvr(results["비연관·보류"])
+
     st.subheader("Organic Search")
-    st.dataframe(results["Organic Search"], use_container_width=True)
+    st.dataframe(os_df, use_container_width=True)
     col1, col2 = st.columns([2, 1])
     with col1:
-        copy_button(results["Organic Search"], key=f"{key_prefix}organic")
+        copy_button(os_df, key=f"{key_prefix}organic")
     with col2:
         st.download_button("📥 상세 데이터 다운로드",
             data=detail_excel_bytes(results["Organic Search_detail"]),
@@ -506,12 +525,12 @@ def show_results(results: dict, st, key_prefix: str = ""):
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             key=f"{key_prefix}dl_organic_detail")
 
-    st.subheader("Referral (AI/GEO · Naver검색/컨텐츠 · 커뮤니티·콘텐츠)")
+    st.subheader("Referral (AI/GEO · Naver검색/컨텐츠 · 커뮤니티·콘텐츠 · 카카오)")
     st.caption("Referral 채널 중 SEO/GEO 연관 유입 (AI 검색, 네이버 검색/블로그/카페, 커뮤니티, 소셜, 카카오)")
-    st.dataframe(results["SEO Referral"], use_container_width=True)
+    st.dataframe(seo_df, use_container_width=True)
     col1, col2 = st.columns([2, 1])
     with col1:
-        copy_button(results["SEO Referral"], key=f"{key_prefix}seo_ref")
+        copy_button(seo_df, key=f"{key_prefix}seo_ref")
     with col2:
         st.download_button("📥 상세 데이터 다운로드",
             data=detail_excel_bytes(results["SEO Referral_detail"]),
@@ -529,10 +548,10 @@ def show_results(results: dict, st, key_prefix: str = ""):
 
     st.subheader("Referral 비연관 (KT·자사 · PPL·광고 · CRM · 결제·인증 · 보류)")
     st.caption("Referral 채널 중 SEO/GEO 비연관 유입 (자사, 광고운영, CRM, 결제/인증, 출처불명)")
-    st.dataframe(results["비연관·보류"], use_container_width=True)
+    st.dataframe(biyeong_df, use_container_width=True)
     col1, col2 = st.columns([2, 1])
     with col1:
-        copy_button(results["비연관·보류"], key=f"{key_prefix}biyeong")
+        copy_button(biyeong_df, key=f"{key_prefix}biyeong")
     with col2:
         st.download_button("📥 상세 데이터 다운로드",
             data=detail_excel_bytes(results["비연관·보류_detail"]),
