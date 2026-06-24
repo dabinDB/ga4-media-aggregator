@@ -212,7 +212,8 @@ def classify_referral_seo(s) -> str | None:
     if any(k in s_lower for k in COMMUNITY_CONTENT_KEYWORDS):
         return "커뮤니티·콘텐츠"
 
-    return None  # 비연관
+    # 위 비연관 패턴에 해당하지 않는 일반 referral → SEO/GEO 연관 그외
+    return "그외"
 
 
 def classify_referral_seo_safe(s) -> str:
