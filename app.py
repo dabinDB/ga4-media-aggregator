@@ -185,7 +185,7 @@ def classify_referral_seo(s) -> str | None:
         return None
     if any(x in src for x in PAYMENT_AUTH_SOURCES):
         return None
-    if src in ["(not set)", "bit.ly"] or "localhost" in src or (src and src[0].isdigit()):
+    if src == "(not set)" or "localhost" in src or (src and src[0].isdigit()):
         return None
 
     # ── SEO/GEO 판단 ──
@@ -232,7 +232,7 @@ def classify_referral_biyeong(s) -> str:
         return "CRM"
     if any(x in src for x in PAYMENT_AUTH_SOURCES):
         return "결제·인증"
-    if src in ["(not set)", "bit.ly"] or "localhost" in src or (src and src[0].isdigit()):
+    if src == "(not set)" or "localhost" in src or (src and src[0].isdigit()):
         return "보류·출처불명"
     return "기타"
 
