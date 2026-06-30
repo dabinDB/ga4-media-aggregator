@@ -56,6 +56,10 @@ ORGANIC_ORDER   = ["Google", "Naver", "Daum", "Bing", "그외"]
 SEO_REF_ORDER   = ["AI/GEO", "Naver검색·컨텐츠", "커뮤니티·콘텐츠", "카카오", "그외"]
 BIYEONG_ORDER   = ["KT·자사", "PPL·광고", "CRM", "결제·인증", "보류·출처불명", "기타"]
 
+# ── 이전버전 (1차 구분 없음) 순서 ────────────────────────────────────────────
+REFERRAL_ORDER_LEGACY  = ["KT·자사", "네이버", "커뮤니티·콘텐츠", "카카오", "그외"]
+AI_SEARCH_ORDER_LEGACY = ["ChatGPT", "Gemini", "Perplexity"]
+
 # 출력 컬럼명
 COL_USERS    = "총사용자"
 COL_SESSIONS = "세션수"
@@ -237,6 +241,27 @@ def classify_referral_biyeong(s) -> str:
     return "기타"
 
 
+def ai_search_channel_mask(df):
+    return df["세션 소스/매체"].fillna("").astype(str).str.lower().str.contains(
+        r"gemini|gpt|perplexity", regex=True)
+
+def classify_referral_legacy(s):
+    s = str(s).lower().strip()
+    if "tistory" in s: return "커뮤니티·콘텐츠"
+    if any(k in s for k in KT_OWNED_KEYWORDS): return "KT·자사"
+    if "naver" in s: return "네이버"
+    if any(x in s for x in ("kakao", "daum.net", ".daum.net")): return "카카오"
+    if any(k in s for k in COMMUNITY_CONTENT_KEYWORDS): return "커뮤니티·콘텐츠"
+    return "그외"
+
+def classify_ai_search(s):
+    s = str(s).lower()
+    if "gemini"     in s: return "Gemini"
+    if "gpt"        in s: return "ChatGPT"
+    if "perplexity" in s: return "Perplexity"
+    return "그외"
+
+
 def referral_seo_mask(df):
     base = referral_channel_mask(df)
     is_seo = df["세션 소스/매체"].apply(lambda s: classify_referral_seo(s) is not None)
@@ -334,6 +359,107 @@ def make_result(dfs: list[pd.DataFrame], exclude_keywords=EXCLUDE_SOURCE_MEDIUM_
         "비연관·보류":              agg(referral_biyeong_mask,  classify_referral_biyeong,   BIYEONG_ORDER),
         "비연관·보류_detail":       agg(referral_biyeong_mask,  classify_referral_biyeong,   BIYEONG_ORDER, detail=True),
     }
+
+
+def make_result_legacy(dfs: list[pd.DataFrame], exclude_keywords=EXCLUDE_SOURCE_MEDIUM_KEYWORDS):
+    """1차 구분(SEO/GEO) 없이 기존 3개 테이블 구조로 집계."""
+    fmt, df_a, df_b = detect_data_format(dfs)
+    kw = dict(fmt=fmt, df_a=df_a, df_b=df_b, exclude_keywords=exclude_keywords)
+
+    def agg(mask, cls, order, detail=False):
+        return aggregate_ga4(**kw, channel_mask_func=mask, classify_func=cls, order=order, detail=detail)
+
+    return {
+        "Organic Search":                agg(organic_channel_mask,   classify_organic,        ORGANIC_ORDER),
+        "Organic Search_detail":         agg(organic_channel_mask,   classify_organic,        ORGANIC_ORDER,  detail=True),
+        "Referral_OS_Unassigned":        agg(referral_channel_mask,  classify_referral_legacy, REFERRAL_ORDER_LEGACY),
+        "Referral_OS_Unassigned_detail": agg(referral_channel_mask,  classify_referral_legacy, REFERRAL_ORDER_LEGACY, detail=True),
+        "AI Search":                     agg(ai_search_channel_mask, classify_ai_search,      AI_SEARCH_ORDER_LEGACY),
+        "AI Search_detail":              agg(ai_search_channel_mask, classify_ai_search,      AI_SEARCH_ORDER_LEGACY, detail=True),
+    }
+
+
+def copy_all_button_legacy(results: dict):
+    import streamlit.components.v1 as components
+    sections = [
+        ("Organic Search",                    add_cvr(results["Organic Search"])),
+        ("Referral / Organic Social / Unassigned", add_cvr(results["Referral_OS_Unassigned"])),
+        ("AI Search (ChatGPT / Gemini / Perplexity)", add_cvr(results["AI Search"])),
+    ]
+    combined = "\n\n".join(
+        f"[ {lbl} ]\n{df[df['구분'] != '합계'].to_csv(index=False, sep=chr(9), header=False)}"
+        for lbl, df in sections
+    )
+    combined = combined.replace("`", "'")
+    import streamlit.components.v1 as components
+    components.html(
+        f"""<button onclick="
+            navigator.clipboard.writeText(`{combined}`).then(() => {{
+                this.textContent = '✅ 전체 복사됨';
+                setTimeout(() => this.textContent = '📋 전체 표 복사 (3개 한번에)', 2000);
+            }});" style="padding:8px 20px;font-size:14px;cursor:pointer;
+            border:1px solid #2e7d32;border-radius:6px;background:#e8f5e9;
+            color:#1b5e20;font-weight:bold;width:100%;">
+            📋 전체 표 복사 (3개 한번에)</button>""",
+        height=48,
+    )
+
+
+def show_results_legacy(results: dict, st, key_prefix: str = ""):
+    copy_all_button_legacy(results)
+    st.divider()
+
+    os_df  = add_cvr(results["Organic Search"])
+    ref_df = add_cvr(results["Referral_OS_Unassigned"])
+    ai_df  = add_cvr(results["AI Search"])
+
+    st.subheader("Organic Search")
+    st.dataframe(os_df, use_container_width=True)
+    col1, col2 = st.columns([2, 1])
+    with col1:
+        copy_button(os_df, key=f"{key_prefix}l_organic")
+    with col2:
+        st.download_button("📥 상세 데이터 다운로드",
+            data=detail_excel_bytes(results["Organic Search_detail"]),
+            file_name="legacy_organic_detail.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            key=f"{key_prefix}dl_l_organic_detail")
+
+    st.subheader("Referral / Organic Social / Unassigned")
+    st.dataframe(ref_df, use_container_width=True)
+    col1, col2 = st.columns([2, 1])
+    with col1:
+        copy_button(ref_df, key=f"{key_prefix}l_referral")
+    with col2:
+        st.download_button("📥 상세 데이터 다운로드",
+            data=detail_excel_bytes(results["Referral_OS_Unassigned_detail"]),
+            file_name="legacy_referral_detail.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            key=f"{key_prefix}dl_l_referral_detail")
+
+    st.divider()
+    st.markdown("**Organic + Referral 합계 8행 복사**")
+    copy_8rows_button(results["Organic Search"], results["Referral_OS_Unassigned"])
+
+    st.divider()
+    st.subheader("AI Search (ChatGPT / Gemini / Perplexity)")
+    st.caption("세션 소스/매체에 gpt·gemini·perplexity 포함된 행 기준")
+    st.dataframe(ai_df, use_container_width=True)
+    col1, col2 = st.columns([2, 1])
+    with col1:
+        copy_button(ai_df, key=f"{key_prefix}l_ai")
+    with col2:
+        st.download_button("📥 상세 데이터 다운로드",
+            data=detail_excel_bytes(results["AI Search_detail"]),
+            file_name="legacy_ai_detail.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            key=f"{key_prefix}dl_l_ai_detail")
+
+    st.download_button("결과 Excel 다운로드",
+        data=to_excel_bytes(results),
+        file_name="ga4_legacy_result.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        key=f"{key_prefix}dl_l_excel")
 
 
 # ── GA4 API (OAuth) ───────────────────────────────────────────────────────────
@@ -587,7 +713,7 @@ def run_streamlit():
             [k.strip() for k in raw_kw.splitlines() if k.strip()] if use_filter else []
         )
 
-    tab_file, tab_api = st.tabs(["📁 파일 업로드", "🔗 GA4 API 연동"])
+    tab_file, tab_api, tab_legacy = st.tabs(["📁 파일 업로드", "🔗 GA4 API 연동", "📂 이전버전 (GA4 API)"])
 
     # ── 탭 1: 파일 업로드 ─────────────────────────────────────────────────────
     with tab_file:
@@ -719,6 +845,77 @@ def run_streamlit():
                 show_results(st.session_state["api_results"], st, key_prefix="api_")
         else:
             st.info("위 버튼으로 Google 계정에 로그인하면 GA4 데이터를 가져올 수 있습니다.")
+
+    # ── 탭 3: 이전버전 (GA4 API, 1차 구분 없음) ──────────────────────────────
+    with tab_legacy:
+        import datetime as _dt
+        st.caption("연관/비연관 구분 없이 기존 3개 표 구조 (Organic Search / Referral / AI Search)")
+
+        secret_prop_id2 = st.secrets.get("GA4_PROPERTY_ID", "")
+        client_id2      = st.secrets.get("GOOGLE_CLIENT_ID", "")
+        client_secret2  = st.secrets.get("GOOGLE_CLIENT_SECRET", "")
+
+        if not client_id2 or not client_secret2:
+            st.error("Secrets에 GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET 가 설정되지 않았습니다.")
+        else:
+            col_l2, col_r2 = st.columns([1, 1])
+            with col_l2:
+                property_id2 = st.text_input(
+                    "GA4 Property ID", value=str(secret_prop_id2),
+                    placeholder="예: 123456789",
+                    key="legacy_property_id",
+                )
+            with col_r2:
+                today2      = _dt.date.today()
+                start_date2 = st.date_input("시작일", value=today2.replace(day=1), key="legacy_start")
+                end_date2   = st.date_input("종료일", value=today2, key="legacy_end")
+
+            # OAuth: GA4 API 연동 탭의 토큰 공유
+            legacy_access  = (st.session_state.get("oauth_token") or {}).get("access_token")
+            legacy_refresh = (st.session_state.get("oauth_token") or {}).get("refresh_token")
+
+            if not legacy_access:
+                st.warning("GA4 API 연동 탭에서 Google 계정으로 먼저 로그인해주세요.")
+            else:
+                st.success("✅ Google 로그인 완료 (GA4 API 연동 탭과 공유)")
+
+                if st.button("📡 이전버전 데이터 가져오기", type="primary",
+                             disabled=not property_id2, key="legacy_fetch_btn"):
+                    if start_date2 > end_date2:
+                        st.error("시작일이 종료일보다 늦습니다.")
+                    else:
+                        try:
+                            from google.oauth2.credentials import Credentials as OAuthCredentials
+                            with st.spinner("GA4 API 호출 중…"):
+                                creds2 = OAuthCredentials(
+                                    token=legacy_access, refresh_token=legacy_refresh,
+                                    token_uri="https://oauth2.googleapis.com/token",
+                                    client_id=client_id2, client_secret=client_secret2,
+                                )
+                                combined_df2, event_df2 = fetch_ga4_data_oauth(
+                                    credentials=creds2,
+                                    property_id=str(property_id2).strip(),
+                                    start_date=start_date2.strftime("%Y-%m-%d"),
+                                    end_date=end_date2.strftime("%Y-%m-%d"),
+                                )
+                            st.session_state["legacy_results"] = make_result_legacy(
+                                [combined_df2, event_df2], exclude_keywords=exclude_keywords
+                            )
+                            st.session_state["legacy_results_info"] = (
+                                f"combined {len(combined_df2):,}행 · event {len(event_df2):,}행 수신 완료"
+                            )
+                        except Exception as e:
+                            err = str(e)
+                            if "401" in err or "credentials" in err.lower():
+                                st.warning("인증이 만료되었습니다. GA4 API 연동 탭에서 다시 로그인해주세요.")
+                                del st.session_state["oauth_token"]
+                                st.rerun()
+                            else:
+                                st.error(err)
+
+                if "legacy_results" in st.session_state:
+                    st.success(st.session_state.get("legacy_results_info", ""))
+                    show_results_legacy(st.session_state["legacy_results"], st, key_prefix="leg_")
 
 
 # ── CLI ───────────────────────────────────────────────────────────────────────
