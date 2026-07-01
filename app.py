@@ -153,6 +153,17 @@ def exact_not_excluded_mask(df, keywords):
 def organic_channel_mask(df):
     return df["세션 기본 채널 그룹"].str.lower().eq("organic search")
 
+def _powercontents_mask(df):
+    return df["세션 소스/매체"].fillna("").astype(str).str.lower().str.contains("powercontents", regex=False)
+
+def organic_seo_mask(df):
+    """Organic Search 채널 중 powercontents 제외 (SEO/GEO 연관용)"""
+    return organic_channel_mask(df) & ~_powercontents_mask(df)
+
+def organic_powercontents_mask(df):
+    """Organic Search 채널 중 powercontents만 (비연관용)"""
+    return organic_channel_mask(df) & _powercontents_mask(df)
+
 def referral_channel_mask(df):
     return df["세션 기본 채널 그룹"].str.lower().isin({"referral", "organic social", "unassigned"})
 
@@ -273,6 +284,10 @@ def referral_biyeong_mask(df):
     is_biyeong = df["세션 소스/매체"].apply(lambda s: classify_referral_seo(s) is None)
     return base & is_biyeong
 
+def biyeong_combined_mask(df):
+    """비연관 전체 = referral 비연관 + organic powercontents"""
+    return referral_biyeong_mask(df) | organic_powercontents_mask(df)
+
 
 # ── 집계 ──────────────────────────────────────────────────────────────────────
 def aggregate_ga4(fmt, df_a, df_b, channel_mask_func, classify_func, order,
@@ -352,12 +367,12 @@ def make_result(dfs: list[pd.DataFrame], exclude_keywords=EXCLUDE_SOURCE_MEDIUM_
         return aggregate_ga4(**kw, channel_mask_func=mask, classify_func=cls, order=order, detail=detail)
 
     return {
-        "Organic Search":         agg(organic_channel_mask,   classify_organic,            ORGANIC_ORDER),
-        "Organic Search_detail":  agg(organic_channel_mask,   classify_organic,            ORGANIC_ORDER, detail=True),
+        "Organic Search":         agg(organic_seo_mask,       classify_organic,            ORGANIC_ORDER),
+        "Organic Search_detail":  agg(organic_seo_mask,       classify_organic,            ORGANIC_ORDER, detail=True),
         "SEO Referral":           agg(referral_seo_mask,      classify_referral_seo_safe,  SEO_REF_ORDER),
         "SEO Referral_detail":    agg(referral_seo_mask,      classify_referral_seo_safe,  SEO_REF_ORDER, detail=True),
-        "비연관·보류":              agg(referral_biyeong_mask,  classify_referral_biyeong,   BIYEONG_ORDER),
-        "비연관·보류_detail":       agg(referral_biyeong_mask,  classify_referral_biyeong,   BIYEONG_ORDER, detail=True),
+        "비연관·보류":              agg(biyeong_combined_mask,  classify_referral_biyeong,   BIYEONG_ORDER),
+        "비연관·보류_detail":       agg(biyeong_combined_mask,  classify_referral_biyeong,   BIYEONG_ORDER, detail=True),
     }
 
 
