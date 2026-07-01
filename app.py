@@ -44,7 +44,7 @@ NAVER_SEO_PARTIAL_SOURCES = [
     "blog.naver", "m.blog.naver", "cafe.naver", "m.cafe.naver",
     "kin.naver", "m.kin.naver", "blog.naverblogwidget", "m.search.naver.com",
 ]
-NAVER_SEO_MEDIUMS = ["powercontents", "officialcafe", "blog_sp", "noticepost"]
+NAVER_SEO_MEDIUMS = ["officialcafe", "blog_sp", "noticepost"]
 
 PAYMENT_AUTH_SOURCES = [
     "mpay", "cert.", "checkplus", "orders.pay.naver", "nid.naver",
@@ -183,7 +183,7 @@ def classify_referral_seo(s) -> str | None:
     # ── 먼저 비연관 패턴 차단 (community 키워드 오탐 방지) ──
     if any(k in s_lower for k in KT_OWNED_KEYWORDS):
         return None
-    if any(k in med for k in ["_ppl"]) or med in ["online_ad", "partner"]:
+    if any(k in med for k in ["_ppl"]) or med in ["online_ad", "partner", "powercontents"]:
         return None
     if src == "crm":
         return None
@@ -230,7 +230,7 @@ def classify_referral_biyeong(s) -> str:
 
     if any(k in s_lower for k in KT_OWNED_KEYWORDS):
         return "KT·자사"
-    if any(k in med for k in ["_ppl"]) or med in ["online_ad", "partner"]:
+    if any(k in med for k in ["_ppl"]) or med in ["online_ad", "partner", "powercontents"]:
         return "PPL·광고"
     if src == "crm":
         return "CRM"
