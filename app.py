@@ -284,9 +284,6 @@ def referral_biyeong_mask(df):
     is_biyeong = df["세션 소스/매체"].apply(lambda s: classify_referral_seo(s) is None)
     return base & is_biyeong
 
-def biyeong_combined_mask(df):
-    """비연관 전체 = referral 비연관 + organic powercontents"""
-    return referral_biyeong_mask(df) | organic_powercontents_mask(df)
 
 
 # ── 집계 ──────────────────────────────────────────────────────────────────────
@@ -367,12 +364,14 @@ def make_result(dfs: list[pd.DataFrame], exclude_keywords=EXCLUDE_SOURCE_MEDIUM_
         return aggregate_ga4(**kw, channel_mask_func=mask, classify_func=cls, order=order, detail=detail)
 
     return {
-        "Organic Search":         agg(organic_seo_mask,       classify_organic,            ORGANIC_ORDER),
-        "Organic Search_detail":  agg(organic_seo_mask,       classify_organic,            ORGANIC_ORDER, detail=True),
-        "SEO Referral":           agg(referral_seo_mask,      classify_referral_seo_safe,  SEO_REF_ORDER),
-        "SEO Referral_detail":    agg(referral_seo_mask,      classify_referral_seo_safe,  SEO_REF_ORDER, detail=True),
-        "비연관·보류":              agg(biyeong_combined_mask,  classify_referral_biyeong,   BIYEONG_ORDER),
-        "비연관·보류_detail":       agg(biyeong_combined_mask,  classify_referral_biyeong,   BIYEONG_ORDER, detail=True),
+        "Organic Search":            agg(organic_seo_mask,          classify_organic,            ORGANIC_ORDER),
+        "Organic Search_detail":     agg(organic_seo_mask,          classify_organic,            ORGANIC_ORDER,  detail=True),
+        "SEO Referral":              agg(referral_seo_mask,         classify_referral_seo_safe,  SEO_REF_ORDER),
+        "SEO Referral_detail":       agg(referral_seo_mask,         classify_referral_seo_safe,  SEO_REF_ORDER,  detail=True),
+        "Organic 비연관":             agg(organic_powercontents_mask, classify_referral_biyeong,  BIYEONG_ORDER),
+        "Organic 비연관_detail":      agg(organic_powercontents_mask, classify_referral_biyeong,  BIYEONG_ORDER,  detail=True),
+        "비연관·보류":               agg(referral_biyeong_mask,      classify_referral_biyeong,   BIYEONG_ORDER),
+        "비연관·보류_detail":         agg(referral_biyeong_mask,      classify_referral_biyeong,   BIYEONG_ORDER,  detail=True),
     }
 
 
@@ -621,9 +620,10 @@ def copy_8rows_button(organic_df: pd.DataFrame, seo_ref_df: pd.DataFrame):
 def copy_all_button(results: dict):
     import streamlit.components.v1 as components
     sections = [
-        ("SEO/GEO 연관 > Organic Search",          add_cvr(results["Organic Search"])),
+        ("SEO/GEO 연관 > Organic Search",                    add_cvr(results["Organic Search"])),
         ("SEO/GEO 연관 > Referral (AI/GEO·Naver·커뮤니티·카카오)", add_cvr(results["SEO Referral"])),
-        ("비연관·보류 > Referral",                  add_cvr(results["비연관·보류"])),
+        ("비연관·보류 > Organic Search 비연관",               add_cvr(results["Organic 비연관"])),
+        ("비연관·보류 > Referral",                           add_cvr(results["비연관·보류"])),
     ]
     combined = "\n\n".join(
         f"[ {lbl} ]\n{df[df['구분'] != '합계'].to_csv(index=False, sep=chr(9), header=False)}"
@@ -650,9 +650,10 @@ def show_results(results: dict, st, key_prefix: str = ""):
     # ── SEO/GEO 연관 유입 ──────────────────────────────────────────────────
     st.markdown("### 🟢 SEO/GEO 연관 유입")
 
-    os_df     = add_cvr(results["Organic Search"])
-    seo_df    = add_cvr(results["SEO Referral"])
-    biyeong_df = add_cvr(results["비연관·보류"])
+    os_df        = add_cvr(results["Organic Search"])
+    seo_df       = add_cvr(results["SEO Referral"])
+    os_bi_df     = add_cvr(results["Organic 비연관"])
+    biyeong_df   = add_cvr(results["비연관·보류"])
 
     st.subheader("Organic Search")
     st.dataframe(os_df, use_container_width=True)
@@ -686,6 +687,19 @@ def show_results(results: dict, st, key_prefix: str = ""):
     # ── 비연관·보류 ────────────────────────────────────────────────────────
     st.divider()
     st.markdown("### 🔴 비연관·보류")
+
+    st.subheader("Organic Search 비연관")
+    st.caption("Organic Search 채널 중 비연관 유입 (naver/powercontents 등)")
+    st.dataframe(os_bi_df, use_container_width=True)
+    col1, col2 = st.columns([2, 1])
+    with col1:
+        copy_button(os_bi_df, key=f"{key_prefix}os_biyeong")
+    with col2:
+        st.download_button("📥 상세 데이터 다운로드",
+            data=detail_excel_bytes(results["Organic 비연관_detail"]),
+            file_name="organic_biyeong_detail.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            key=f"{key_prefix}dl_os_biyeong_detail")
 
     st.subheader("Referral 비연관 (KT·자사 · PPL·광고 · CRM · 결제·인증 · 보류)")
     st.caption("Referral 채널 중 SEO/GEO 비연관 유입 (자사, 광고운영, CRM, 결제/인증, 출처불명)")
