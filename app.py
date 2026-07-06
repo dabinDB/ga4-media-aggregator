@@ -368,6 +368,8 @@ def make_result(dfs: list[pd.DataFrame], exclude_keywords=EXCLUDE_SOURCE_MEDIUM_
         "Organic Search_detail":     agg(organic_seo_mask,          classify_organic,            ORGANIC_ORDER,  detail=True),
         "SEO Referral":              agg(referral_seo_mask,         classify_referral_seo_safe,  SEO_REF_ORDER),
         "SEO Referral_detail":       agg(referral_seo_mask,         classify_referral_seo_safe,  SEO_REF_ORDER,  detail=True),
+        "AI Search":                 agg(ai_search_channel_mask,    classify_ai_search,          AI_SEARCH_ORDER_LEGACY),
+        "AI Search_detail":          agg(ai_search_channel_mask,    classify_ai_search,          AI_SEARCH_ORDER_LEGACY, detail=True),
         "Organic 비연관":             agg(organic_powercontents_mask, classify_referral_biyeong,  BIYEONG_ORDER),
         "Organic 비연관_detail":      agg(organic_powercontents_mask, classify_referral_biyeong,  BIYEONG_ORDER,  detail=True),
         "비연관·보류":               agg(referral_biyeong_mask,      classify_referral_biyeong,   BIYEONG_ORDER),
@@ -622,6 +624,7 @@ def copy_all_button(results: dict):
     sections = [
         ("SEO/GEO 연관 > Organic Search",                    add_cvr(results["Organic Search"])),
         ("SEO/GEO 연관 > Referral (AI/GEO·Naver·커뮤니티·카카오)", add_cvr(results["SEO Referral"])),
+        ("SEO/GEO 연관 > AI Search",                         add_cvr(results["AI Search"])),
         ("비연관·보류 > Organic Search 비연관",               add_cvr(results["Organic 비연관"])),
         ("비연관·보류 > Referral",                           add_cvr(results["비연관·보류"])),
     ]
@@ -634,11 +637,11 @@ def copy_all_button(results: dict):
         f"""<button onclick="
             navigator.clipboard.writeText(`{combined}`).then(() => {{
                 this.textContent = '✅ 전체 복사됨';
-                setTimeout(() => this.textContent = '📋 전체 표 복사 (3개 한번에)', 2000);
+                setTimeout(() => this.textContent = '📋 전체 표 복사 (5개 한번에)', 2000);
             }});" style="padding:8px 20px;font-size:14px;cursor:pointer;
             border:1px solid #2e7d32;border-radius:6px;background:#e8f5e9;
             color:#1b5e20;font-weight:bold;width:100%;">
-            📋 전체 표 복사 (3개 한번에)</button>""",
+            📋 전체 표 복사 (5개 한번에)</button>""",
         height=48,
     )
 
@@ -683,6 +686,23 @@ def show_results(results: dict, st, key_prefix: str = ""):
     st.divider()
     st.markdown("**Organic + SEO Referral 합계 8행 복사**")
     copy_8rows_button(results["Organic Search"], results["SEO Referral"])
+
+    # ── AI Search ──────────────────────────────────────────────────────────
+    if "AI Search" in results:
+        st.divider()
+        st.markdown("### 🤖 AI Search (ChatGPT / Gemini / Perplexity)")
+        st.caption("세션 소스/매체에 gpt·gemini·perplexity 포함된 행 기준")
+        ai_df = add_cvr(results["AI Search"])
+        st.dataframe(ai_df, use_container_width=True)
+        col1, col2 = st.columns([2, 1])
+        with col1:
+            copy_button(ai_df, key=f"{key_prefix}ai_search")
+        with col2:
+            st.download_button("📥 상세 데이터 다운로드",
+                data=detail_excel_bytes(results["AI Search_detail"]),
+                file_name="ai_search_detail.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                key=f"{key_prefix}dl_ai_search_detail")
 
     # ── 비연관·보류 ────────────────────────────────────────────────────────
     st.divider()
@@ -838,6 +858,8 @@ def run_streamlit():
                     st.rerun()
 
             if st.button("📡 데이터 가져오기", type="primary", disabled=not property_id):
+                st.session_state.pop("api_results", None)
+                st.session_state.pop("api_results_info", None)
                 if start_date > end_date:
                     st.error("시작일이 종료일보다 늦습니다.")
                 else:
