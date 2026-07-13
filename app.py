@@ -165,7 +165,7 @@ def organic_powercontents_mask(df):
     return organic_channel_mask(df) & _powercontents_mask(df)
 
 def referral_channel_mask(df):
-    return df["세션 기본 채널 그룹"].str.lower().isin({"referral", "organic social", "unassigned"})
+    return df["세션 기본 채널 그룹"].str.lower().isin({"referral", "organic social", "unassigned", "ai assistant"})
 
 def classify_organic(s):
     s = str(s).lower()
@@ -273,16 +273,21 @@ def classify_ai_search(s):
     return "그외"
 
 
+def _ai_assistant_channel_mask(df):
+    return df["세션 기본 채널 그룹"].str.lower().eq("ai assistant")
+
 def referral_seo_mask(df):
     base = referral_channel_mask(df)
     is_seo = df["세션 소스/매체"].apply(lambda s: classify_referral_seo(s) is not None)
-    return base & is_seo
+    # AI Assistant 채널은 소스 불문 SEO/GEO 연관으로 강제 포함
+    return base & (is_seo | _ai_assistant_channel_mask(df))
 
 
 def referral_biyeong_mask(df):
     base = referral_channel_mask(df)
     is_biyeong = df["세션 소스/매체"].apply(lambda s: classify_referral_seo(s) is None)
-    return base & is_biyeong
+    # AI Assistant 채널은 비연관에서 제외
+    return base & is_biyeong & ~_ai_assistant_channel_mask(df)
 
 
 
@@ -305,6 +310,11 @@ def aggregate_ga4(fmt, df_a, df_b, channel_mask_func, classify_func, order,
 
         combined["구분"] = combined["세션 소스/매체"].apply(classify_func)
         events["구분"]   = events["세션 소스/매체"].apply(classify_func)
+        # AI Assistant 채널 그룹은 소스 불문 AI/GEO로 강제 분류
+        ai_ch = combined["세션 기본 채널 그룹"].str.lower().eq("ai assistant")
+        combined.loc[ai_ch, "구분"] = "AI/GEO"
+        ai_ch_ev = events["세션 기본 채널 그룹"].str.lower().eq("ai assistant")
+        events.loc[ai_ch_ev, "구분"] = "AI/GEO"
 
         total_users = combined.groupby(grp_cols, dropna=False)["총 사용자"].sum().rename(COL_USERS)
         sessions    = combined.groupby(grp_cols, dropna=False)["세션수"].sum().rename(COL_SESSIONS)
@@ -330,6 +340,10 @@ def aggregate_ga4(fmt, df_a, df_b, channel_mask_func, classify_func, order,
 
         user_base["구분"]   = user_base["세션 소스/매체"].apply(classify_func)
         metric_base["구분"] = metric_base["세션 소스/매체"].apply(classify_func)
+        ai_ch_u = user_base["세션 기본 채널 그룹"].str.lower().eq("ai assistant")
+        user_base.loc[ai_ch_u, "구분"] = "AI/GEO"
+        ai_ch_m = metric_base["세션 기본 채널 그룹"].str.lower().eq("ai assistant")
+        metric_base.loc[ai_ch_m, "구분"] = "AI/GEO"
 
         total_users = user_base.groupby(grp_cols, dropna=False)["총 사용자"].sum().rename(COL_USERS)
         sessions    = (
