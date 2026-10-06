@@ -635,18 +635,23 @@ def copy_8rows_button(organic_df: pd.DataFrame, seo_ref_df: pd.DataFrame):
 
 def copy_all_button(results: dict):
     import streamlit.components.v1 as components
+    # (접두_레이블, DataFrame) — 각 행 앞에 접두 컬럼을 붙여 하나로 이어 붙임
     sections = [
-        ("SEO/GEO 연관 > Organic Search",                    add_cvr(results["Organic Search"])),
-        ("SEO/GEO 연관 > Referral (AI/GEO·Naver·커뮤니티·카카오)", add_cvr(results["SEO Referral"])),
-        ("SEO/GEO 연관 > AI Search",                         add_cvr(results["AI Search"])),
-        ("비연관·보류 > Organic Search 비연관",               add_cvr(results["Organic 비연관"])),
-        ("비연관·보류 > Referral",                           add_cvr(results["비연관·보류"])),
+        ("organic연관",   add_cvr(results["Organic Search"])),
+        ("referral연관",  add_cvr(results["SEO Referral"])),
+        ("ai",            add_cvr(results["AI Search"])) if "AI Search" in results else None,
+        ("organic비연관", add_cvr(results["Organic 비연관"])),
+        ("referral비연관",add_cvr(results["비연관·보류"])),
     ]
-    combined = "\n\n".join(
-        f"[ {lbl} ]\n{df[df['구분'] != '합계'].to_csv(index=False, sep=chr(9), header=False)}"
-        for lbl, df in sections
-    )
-    combined = combined.replace("`", "'")
+    rows = []
+    for item in sections:
+        if item is None:
+            continue
+        prefix, df = item
+        for _, row in df[df["구분"] != "합계"].iterrows():
+            vals = "\t".join(str(v) for v in row.values)
+            rows.append(f"{prefix}\t{vals}")
+    combined = "\n".join(rows).replace("`", "'")
     components.html(
         f"""<button onclick="
             navigator.clipboard.writeText(`{combined}`).then(() => {{
