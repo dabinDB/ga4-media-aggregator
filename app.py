@@ -510,16 +510,16 @@ def show_results_legacy(results: dict, st, key_prefix: str = ""):
 
 
 # ── GA4 API (OAuth) ───────────────────────────────────────────────────────────
-def fetch_ga4_data_oauth(credentials, property_id: str, start_date: str, end_date: str):
+def fetch_ga4_data_oauth(credentials, property_id: str, start_date: str, end_date: str,
+                         on_progress=None):
     from google.analytics.data_v1beta import BetaAnalyticsDataClient
     from google.analytics.data_v1beta.types import (
         DateRange, Dimension, Filter, FilterExpression,
         FilterExpressionList, Metric, RunReportRequest,
     )
 
-    client     = BetaAnalyticsDataClient(credentials=credentials)
-    prop       = f"properties/{property_id}"
-    date_range = DateRange(start_date=start_date, end_date=end_date)
+    client = BetaAnalyticsDataClient(credentials=credentials)
+    prop   = f"properties/{property_id}"
 
     base_dims = [
         Dimension(name="date"),
@@ -528,26 +528,28 @@ def fetch_ga4_data_oauth(credentials, property_id: str, start_date: str, end_dat
         Dimension(name="deviceCategory"),
     ]
 
-    combined_req = RunReportRequest(
-        property=prop, date_ranges=[date_range],
-        dimensions=base_dims,
-        metrics=[Metric(name="sessions"), Metric(name="totalUsers")],
-        limit=100000,
-    )
+    def combined_req(date_range):
+        return RunReportRequest(
+            property=prop, date_ranges=[date_range],
+            dimensions=base_dims,
+            metrics=[Metric(name="sessions"), Metric(name="totalUsers")],
+            limit=100000,
+        )
 
-    event_req = RunReportRequest(
-        property=prop, date_ranges=[date_range],
-        dimensions=base_dims + [Dimension(name="eventName")],
-        metrics=[Metric(name="keyEvents")],
-        dimension_filter=FilterExpression(filter=Filter(
-            field_name="eventName",
-            in_list_filter=Filter.InListFilter(
-                values=TARGET_EVENTS,
-                case_sensitive=True,
-            ),
-        )),
-        limit=100000,
-    )
+    def event_req(date_range):
+        return RunReportRequest(
+            property=prop, date_ranges=[date_range],
+            dimensions=base_dims + [Dimension(name="eventName")],
+            metrics=[Metric(name="keyEvents")],
+            dimension_filter=FilterExpression(filter=Filter(
+                field_name="eventName",
+                in_list_filter=Filter.InListFilter(
+                    values=TARGET_EVENTS,
+                    case_sensitive=True,
+                ),
+            )),
+            limit=100000,
+        )
 
     def to_df(response, metric_cols):
         dim_names = [h.name for h in response.dimension_headers]
@@ -568,8 +570,18 @@ def fetch_ga4_data_oauth(credentials, property_id: str, start_date: str, end_dat
             df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0).astype(int)
         return df
 
-    combined_df = to_df(client.run_report(combined_req), ["세션수", "총 사용자"])
-    event_df    = to_df(client.run_report(event_req),    ["주요 이벤트"])
+    # 기간 일괄 조회와 일별 조회 합산 값이 다를 수 있어, 하루씩 조회 후 이어 붙임
+    combined_parts, event_parts = [], []
+    for day in pd.date_range(start_date, end_date, freq="D"):
+        d = day.strftime("%Y-%m-%d")
+        dr = DateRange(start_date=d, end_date=d)
+        combined_parts.append(to_df(client.run_report(combined_req(dr)), ["세션수", "총 사용자"]))
+        event_parts.append(to_df(client.run_report(event_req(dr)), ["주요 이벤트"]))
+        if on_progress:
+            on_progress(d)
+
+    combined_df = pd.concat(combined_parts, ignore_index=True)
+    event_df    = pd.concat(event_parts, ignore_index=True)
     return combined_df, event_df
 
 
@@ -906,16 +918,20 @@ def run_streamlit():
                                 token_uri="https://oauth2.googleapis.com/token",
                                 client_id=client_id, client_secret=client_secret,
                             )
+                            progress = st.empty()
                             combined_df, event_df = fetch_ga4_data_oauth(
                                 credentials=creds,
                                 property_id=str(property_id).strip(),
                                 start_date=start_date.strftime("%Y-%m-%d"),
                                 end_date=end_date.strftime("%Y-%m-%d"),
+                                on_progress=lambda d: progress.caption(f"⏳ {d} 조회 완료"),
                             )
+                            progress.empty()
                         st.session_state["api_results"] = make_result(
                             [combined_df, event_df], exclude_keywords=exclude_keywords
                         )
                         st.session_state["api_results_info"] = (
+                            f"{(end_date - start_date).days + 1}일 일별 조회 합산 · "
                             f"combined {len(combined_df):,}행 · event {len(event_df):,}행 수신 완료"
                         )
                     except Exception as e:
@@ -979,16 +995,20 @@ def run_streamlit():
                                     token_uri="https://oauth2.googleapis.com/token",
                                     client_id=client_id2, client_secret=client_secret2,
                                 )
+                                progress2 = st.empty()
                                 combined_df2, event_df2 = fetch_ga4_data_oauth(
                                     credentials=creds2,
                                     property_id=str(property_id2).strip(),
                                     start_date=start_date2.strftime("%Y-%m-%d"),
                                     end_date=end_date2.strftime("%Y-%m-%d"),
+                                    on_progress=lambda d: progress2.caption(f"⏳ {d} 조회 완료"),
                                 )
+                                progress2.empty()
                             st.session_state["legacy_results"] = make_result_legacy(
                                 [combined_df2, event_df2], exclude_keywords=exclude_keywords
                             )
                             st.session_state["legacy_results_info"] = (
+                                f"{(end_date2 - start_date2).days + 1}일 일별 조회 합산 · "
                                 f"combined {len(combined_df2):,}행 · event {len(event_df2):,}행 수신 완료"
                             )
                         except Exception as e:
