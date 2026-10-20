@@ -273,6 +273,23 @@ def classify_ai_search(s):
     return "그외"
 
 
+# 엑셀(ktm_ai AI_RAW) 판별 기준과 동일: gpt 계열 paid 광고 제외, copilot/claude는 기타 AI
+AI_SEARCH_ORDER = ["ChatGPT", "Gemini", "Perplexity", "기타 AI"]
+
+def ai_search_mask(df):
+    s = df["세션 소스/매체"].fillna("").astype(str).str.lower()
+    is_ai = s.str.contains(r"gpt|gemini|perplexity|copilot|claude", regex=True)
+    is_paid_gpt = s.str.contains("gpt", regex=False) & s.str.contains(r"paidsearch|paiddisplay", regex=True)
+    return is_ai & ~is_paid_gpt
+
+def classify_ai_search_excel(s):
+    s = str(s).lower()
+    if "gpt"        in s: return "ChatGPT"
+    if "gemini"     in s: return "Gemini"
+    if "perplexity" in s: return "Perplexity"
+    return "기타 AI"
+
+
 def _ai_assistant_channel_mask(df):
     return df["세션 기본 채널 그룹"].str.lower().eq("ai assistant")
 
@@ -382,8 +399,8 @@ def make_result(dfs: list[pd.DataFrame], exclude_keywords=EXCLUDE_SOURCE_MEDIUM_
         "Organic Search_detail":     agg(organic_seo_mask,          classify_organic,            ORGANIC_ORDER,  detail=True),
         "SEO Referral":              agg(referral_seo_mask,         classify_referral_seo_safe,  SEO_REF_ORDER),
         "SEO Referral_detail":       agg(referral_seo_mask,         classify_referral_seo_safe,  SEO_REF_ORDER,  detail=True),
-        "AI Search":                 agg(ai_search_channel_mask,    classify_ai_search,          AI_SEARCH_ORDER_LEGACY),
-        "AI Search_detail":          agg(ai_search_channel_mask,    classify_ai_search,          AI_SEARCH_ORDER_LEGACY, detail=True),
+        "AI Search":                 agg(ai_search_mask,            classify_ai_search_excel,    AI_SEARCH_ORDER),
+        "AI Search_detail":          agg(ai_search_mask,            classify_ai_search_excel,    AI_SEARCH_ORDER, detail=True),
         "Organic 비연관":             agg(organic_powercontents_mask, classify_referral_biyeong,  BIYEONG_ORDER),
         "Organic 비연관_detail":      agg(organic_powercontents_mask, classify_referral_biyeong,  BIYEONG_ORDER,  detail=True),
         "비연관·보류":               agg(referral_biyeong_mask,      classify_referral_biyeong,   BIYEONG_ORDER),
@@ -710,7 +727,7 @@ def show_results(results: dict, st, key_prefix: str = ""):
     if "AI Search" in results:
         st.divider()
         st.markdown("### 🤖 AI Search (ChatGPT / Gemini / Perplexity)")
-        st.caption("세션 소스/매체에 gpt·gemini·perplexity 포함된 행 기준")
+        st.caption("세션 소스/매체에 gpt·gemini·perplexity·copilot·claude 포함 행 기준 (gpt 계열 paidsearch/paiddisplay 광고 제외)")
         ai_df = add_cvr(results["AI Search"])
         st.dataframe(ai_df, use_container_width=True)
         col1, col2 = st.columns([2, 1])
