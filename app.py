@@ -54,7 +54,8 @@ PAYMENT_AUTH_SOURCES = [
 # 테이블 행 정렬 순서
 ORGANIC_ORDER   = ["Google", "Naver", "Daum", "Bing", "그외"]
 SEO_REF_ORDER   = ["AI/GEO", "Naver검색·컨텐츠", "커뮤니티·콘텐츠", "카카오", "그외"]
-BIYEONG_ORDER   = ["KT·자사", "PPL·광고", "CRM", "결제·인증", "보류·출처불명", "기타"]
+BIYEONG_ORDER   = ["KT·자사", "PPL·광고", "CRM", "결제·인증", "보류·출처불명"]
+ORGANIC_BIYEONG_ORDER = ["PPL·광고"]
 
 # ── 이전버전 (1차 구분 없음) 순서 ────────────────────────────────────────────
 REFERRAL_ORDER_LEGACY  = ["KT·자사", "네이버", "커뮤니티·콘텐츠", "카카오", "그외"]
@@ -274,7 +275,7 @@ def classify_ai_search(s):
 
 
 # 엑셀(ktm_ai AI_RAW) 판별 기준과 동일: gpt 계열 paid 광고 제외, copilot/claude는 기타 AI
-AI_SEARCH_ORDER = ["ChatGPT", "Gemini", "Perplexity", "기타 AI"]
+AI_SEARCH_ORDER = ["ChatGPT", "Gemini", "Perplexity"]
 
 def ai_search_mask(df):
     s = df["세션 소스/매체"].fillna("").astype(str).str.lower()
@@ -401,8 +402,8 @@ def make_result(dfs: list[pd.DataFrame], exclude_keywords=EXCLUDE_SOURCE_MEDIUM_
         "SEO Referral_detail":       agg(referral_seo_mask,         classify_referral_seo_safe,  SEO_REF_ORDER,  detail=True),
         "AI Search":                 agg(ai_search_mask,            classify_ai_search_excel,    AI_SEARCH_ORDER),
         "AI Search_detail":          agg(ai_search_mask,            classify_ai_search_excel,    AI_SEARCH_ORDER, detail=True),
-        "Organic 비연관":             agg(organic_powercontents_mask, classify_referral_biyeong,  BIYEONG_ORDER),
-        "Organic 비연관_detail":      agg(organic_powercontents_mask, classify_referral_biyeong,  BIYEONG_ORDER,  detail=True),
+        "Organic 비연관":             agg(organic_powercontents_mask, classify_referral_biyeong,  ORGANIC_BIYEONG_ORDER),
+        "Organic 비연관_detail":      agg(organic_powercontents_mask, classify_referral_biyeong,  ORGANIC_BIYEONG_ORDER, detail=True),
         "비연관·보류":               agg(referral_biyeong_mask,      classify_referral_biyeong,   BIYEONG_ORDER),
         "비연관·보류_detail":         agg(referral_biyeong_mask,      classify_referral_biyeong,   BIYEONG_ORDER,  detail=True),
     }
