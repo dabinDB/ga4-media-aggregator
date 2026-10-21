@@ -621,14 +621,30 @@ def copy_button(df: pd.DataFrame, key: str):
     import streamlit.components.v1 as components
     data_only = df[df["구분"] != "합계"]
     tsv = data_only.to_csv(index=False, sep="\t", header=False).replace("`", "'")
+
+    # 구분별로 클릭·세션·가입신청 시작·CVR1·가입신청 완료·CVR2 를 한 열에 세로로 나열
+    def pct(num, den):
+        return f"{num / den * 100:.2f}%" if den > 0 else "-"
+    vertical = []
+    for _, r in data_only.iterrows():
+        users, sess, start, done = (int(r[c]) for c in (COL_USERS, COL_SESSIONS, COL_START, COL_COMPLETE))
+        vertical += [users, sess, start, pct(start, sess), done, pct(done, start)]
+    vtsv = "\n".join(str(v) for v in vertical)
+
+    btn_style = ("padding:6px 14px;font-size:13px;cursor:pointer;margin-right:8px;"
+                 "border:1px solid #ccc;border-radius:6px;background:#f8f9fa;")
     components.html(
         f"""<button onclick="
             navigator.clipboard.writeText(`{tsv}`).then(() => {{
                 this.textContent = '✅ 복사됨';
                 setTimeout(() => this.textContent = '📋 클립보드 복사 (엑셀 붙여넣기용)', 2000);
-            }});" style="padding:6px 14px;font-size:13px;cursor:pointer;
-            border:1px solid #ccc;border-radius:6px;background:#f8f9fa;">
-            📋 클립보드 복사 (엑셀 붙여넣기용)</button>""",
+            }});" style="{btn_style}">
+            📋 클립보드 복사 (엑셀 붙여넣기용)</button><button onclick="
+            navigator.clipboard.writeText(`{vtsv}`).then(() => {{
+                this.textContent = '✅ 복사됨';
+                setTimeout(() => this.textContent = '📋 세로 지표 복사 (붙여넣기용 2)', 2000);
+            }});" style="{btn_style}">
+            📋 세로 지표 복사 (붙여넣기용 2)</button>""",
         height=40,
     )
 
