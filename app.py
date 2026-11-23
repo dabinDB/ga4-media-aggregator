@@ -826,7 +826,9 @@ def run_streamlit():
             [k.strip() for k in raw_kw.splitlines() if k.strip()] if use_filter else []
         )
 
-    tab_file, tab_api, tab_legacy = st.tabs(["📁 파일 업로드", "🔗 GA4 API 연동", "📂 이전버전 (GA4 API)"])
+    tab_file, tab_api, tab_legacy, tab_content = st.tabs(
+        ["📁 파일 업로드", "🔗 GA4 API 연동", "📂 이전버전 (GA4 API)", "📝 내재화컨텐츠"]
+    )
 
     # ── 탭 1: 파일 업로드 ─────────────────────────────────────────────────────
     with tab_file:
@@ -1039,6 +1041,100 @@ def run_streamlit():
                 if "legacy_results" in st.session_state:
                     st.success(st.session_state.get("legacy_results_info", ""))
                     show_results_legacy(st.session_state["legacy_results"], st, key_prefix="leg_")
+
+    with tab_content:
+        render_content_tab(st)
+
+
+def render_content_tab(st):
+    import datetime
+    import content_report as cr
+    from google.analytics.data_v1beta import BetaAnalyticsDataClient
+    from google.oauth2.credentials import Credentials as OAuthCredentials
+
+    st.caption("주차별·콘텐츠별 GA4 성과를 조회하고 주간 리포트 엑셀의 "
+               "'콘텐츠별 성과'·'채널별 전환' 시트를 채웁니다. GSC 칸은 수동 입력을 그대로 유지합니다.")
+
+    token = st.session_state.get("oauth_token") or {}
+    if not token.get("access_token"):
+        st.warning("GA4 API 연동 탭에서 Google 계정으로 먼저 로그인해주세요.")
+        return
+    st.success("✅ Google 로그인 완료 (GA4 API 연동 탭과 공유)")
+
+    today = datetime.date.today()
+    all_weeks = list(range(1, cr.N_WEEKS + 1))
+    col_p, col_w = st.columns([1, 2])
+    with col_p:
+        property_id = st.text_input("GA4 Property ID", value=cr.PROPERTY_ID, key="content_property_id")
+    with col_w:
+        weeks = st.multiselect("주차 (기본: 끝난 주차 전부)", all_weeks, default=cr.finished_weeks(today),
+                               format_func=cr.week_label, key="content_weeks")
+
+    unfinished = [cr.week_label(i) for i in weeks if cr.week_range(i)[1] >= today]
+    if unfinished:
+        st.warning(f"아직 안 끝난 주차는 부분 데이터입니다: {', '.join(unfinished)}")
+
+    if st.button("📡 내재화컨텐츠 데이터 가져오기", type="primary",
+                 disabled=not (weeks and property_id), key="content_fetch_btn"):
+        st.session_state.pop("content_results", None)
+        try:
+            creds = OAuthCredentials(
+                token=token["access_token"], refresh_token=token.get("refresh_token"),
+                token_uri="https://oauth2.googleapis.com/token",
+                client_id=st.secrets.get("GOOGLE_CLIENT_ID", ""),
+                client_secret=st.secrets.get("GOOGLE_CLIENT_SECRET", ""),
+            )
+            client = BetaAnalyticsDataClient(credentials=creds)
+            results, events = {}, set()
+            progress = st.progress(0.0)
+            for n, i in enumerate(sorted(weeks), 1):
+                progress.progress((n - 1) / len(weeks), text=f"{cr.week_label(i)} 조회 중…")
+                s, e = cr.week_range(i)
+                cdata, hdata, seen = cr.collect_week(client, str(property_id).strip(), s, e)
+                results[i] = (cdata, hdata)
+                events |= seen
+            progress.empty()
+            st.session_state["content_results"] = results
+            st.session_state["content_events"] = sorted(events)
+        except Exception as e:
+            err = str(e)
+            if "401" in err or "credentials" in err.lower():
+                st.warning("인증이 만료되었습니다. GA4 API 연동 탭에서 다시 로그인해주세요.")
+                del st.session_state["oauth_token"]
+                st.rerun()
+            else:
+                st.error(err)
+
+    results = st.session_state.get("content_results")
+    if not results:
+        return
+
+    content_df, channel_df = cr.to_frames(results)
+    content_view = content_df.copy()
+    content_view["평균 참여율"] = content_view["평균 참여율"].map(
+        lambda v: "-" if pd.isna(v) else f"{v * 100:.2f}%")
+    st.subheader("콘텐츠별 성과")
+    st.dataframe(content_view, use_container_width=True, hide_index=True)
+    st.subheader("채널별 전환")
+    st.dataframe(channel_df, use_container_width=True, hide_index=True)
+    with st.expander("집계한 가입 이벤트"):
+        st.write(", ".join(st.session_state.get("content_events", [])) or "(없음)")
+
+    st.divider()
+    st.subheader("리포트 엑셀에 입력")
+    uploaded = st.file_uploader("KT M모바일_내재화컨텐츠_주간리포트.xlsx 업로드", type=["xlsx"], key="content_xlsx")
+    if uploaded:
+        try:
+            filled, warnings = cr.fill_report(uploaded.getvalue(), results)
+        except Exception as e:
+            st.error(str(e))
+            return
+        for w in warnings:
+            st.warning(w)
+        st.download_button("📥 입력 완료된 리포트 다운로드", data=filled,
+            file_name=uploaded.name.rsplit(".", 1)[0] + "_GA4입력.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            key="content_dl")
 
 
 # ── CLI ───────────────────────────────────────────────────────────────────────
