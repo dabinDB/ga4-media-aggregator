@@ -1046,6 +1046,23 @@ def run_streamlit():
         render_content_tab(st)
 
 
+def copy_blocks_buttons(df, blocks, to_tsv):
+    import html as html_lib
+    import streamlit.components.v1 as components
+    buttons = []
+    for letters, cols in blocks:
+        label = f"📋 {letters}열: {' · '.join(cols)}"
+        script = (f"const b=this,l={json.dumps(label, ensure_ascii=False)};"
+                  f"navigator.clipboard.writeText({json.dumps(to_tsv(df, cols), ensure_ascii=False)})"
+                  ".then(()=>{b.textContent='✅ 복사됨';setTimeout(()=>b.textContent=l,2000);});")
+        buttons.append(
+            f'<button onclick="{html_lib.escape(script, quote=True)}" style="padding:6px 12px;font-size:13px;'
+            f'cursor:pointer;border:1px solid #4a90d9;border-radius:6px;background:#e8f0fe;color:#1a56a0;'
+            f'font-weight:bold;">{html_lib.escape(label)}</button>'
+        )
+    components.html(f'<div style="display:flex;flex-wrap:wrap;gap:6px;">{"".join(buttons)}</div>', height=84)
+
+
 def render_content_tab(st):
     import datetime
     import content_report as cr
@@ -1115,8 +1132,11 @@ def render_content_tab(st):
         lambda v: "-" if pd.isna(v) else f"{v * 100:.2f}%")
     st.subheader("콘텐츠별 성과")
     st.dataframe(content_view, use_container_width=True, hide_index=True)
+    st.caption("파란색 입력 칸만 복사합니다. 해당 주차 첫 행의 시작 열에 붙여넣으세요.")
+    copy_blocks_buttons(content_df, cr.CONTENT_COPY_BLOCKS, cr.block_tsv)
     st.subheader("채널별 전환")
     st.dataframe(channel_df, use_container_width=True, hide_index=True)
+    copy_blocks_buttons(channel_df, cr.CHANNEL_COPY_BLOCKS, cr.block_tsv)
     with st.expander("집계한 가입 이벤트"):
         st.write(", ".join(st.session_state.get("content_events", [])) or "(없음)")
 

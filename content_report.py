@@ -43,6 +43,18 @@ CONTENT_COLS = ["오가닉 세션", "ChatGPT", "Perplexity", "Gemini", "기타 A
                 "활성 사용자", "페이지뷰 수", "평균 참여율", "평균 참여시간(초)", "유입 세션", "가입시작", "가입완료"]
 CHANNEL_COLS = ["유입 세션", "가입시작", "가입완료"]
 
+# 수식 열을 덮어쓰지 않도록 리포트 시트의 연속된 입력 칸 단위로 복사
+CONTENT_COPY_BLOCKS = [
+    ("G:K", ["오가닉 세션", "ChatGPT", "Perplexity", "Gemini", "기타 AI"]),
+    ("M:Q", ["세션", "참여 세션", "사용자", "활성 사용자", "페이지뷰 수"]),
+    ("S:V", ["평균 참여율", "평균 참여시간(초)", "유입 세션", "가입시작"]),
+    ("X", ["가입완료"]),
+]
+CHANNEL_COPY_BLOCKS = [
+    ("D:E", ["유입 세션", "가입시작"]),
+    ("G", ["가입완료"]),
+]
+
 
 # ── GA4 ──────────────────────────────────────────────────────────────────────
 def _filter(field, regex=None, contains=None):
@@ -181,6 +193,18 @@ def to_frames(results):
                 channel.append({"주차": label, "콘텐츠": name, "유입채널": ch,
                                 **{k: hdata[(name, ch)].get(k, 0) for k in CHANNEL_COLS}})
     return pd.DataFrame(content), pd.DataFrame(channel)
+
+
+def _copy_value(col, v):
+    if v is None or pd.isna(v):
+        return ""
+    if col == "평균 참여율":
+        return f"{v * 100:.4f}%"
+    return str(int(v)) if float(v).is_integer() else str(v)
+
+
+def block_tsv(df, cols):
+    return "\n".join("\t".join(_copy_value(c, row[c]) for c in cols) for _, row in df.iterrows())
 
 
 # ── 엑셀 (XML 직접 수정: 피벗·슬라이서 보존) ─────────────────────────────────
