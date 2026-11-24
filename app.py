@@ -1054,7 +1054,10 @@ def copy_blocks_buttons(df, blocks, to_tsv):
 
 def render_content_tab(st):
     import datetime
-    import content_report as cr
+    import importlib
+    import content_report
+    # Streamlit Cloud는 git 반영 후에도 프로세스가 유지되어 이전 모듈이 남을 수 있음
+    cr = importlib.reload(content_report)
     from google.analytics.data_v1beta import BetaAnalyticsDataClient
     from google.auth.transport.requests import AuthorizedSession
     from google.oauth2.credentials import Credentials as OAuthCredentials
