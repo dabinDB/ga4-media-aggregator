@@ -5,6 +5,8 @@ import re
 import zipfile
 from collections import defaultdict
 from io import BytesIO
+from urllib.parse import quote
+from xml.sax.saxutils import escape
 
 import pandas as pd
 
@@ -63,6 +65,22 @@ CONTENT_COPY_BLOCKS = [
 CHANNEL_COPY_BLOCKS = [
     ("D:E", ["유입 세션", "가입시작"]),
     ("G", ["가입완료"]),
+]
+
+SHEET_GSC = "GSC 검색어"
+GSC_TABLE = "tbl_gsc"
+GSC_API = "https://www.googleapis.com/webmasters/v3"
+GSC_SITE_KEYWORD = "ktmmobile.com"
+GSC_DELAY_DAYS = 3
+GSC_SUMMARY_COLS = ["노출수", "클릭수", "평균 순위"]
+GSC_QUERY_COLS = ["주차", "콘텐츠", "검색어", "클릭수", "노출수", "평균 순위"]
+GSC_CONTENT_COPY_BLOCKS = [
+    ("C:D", ["노출수", "클릭수"]),
+    ("F", ["평균 순위"]),
+]
+GSC_QUERY_COPY_BLOCKS = [
+    ("A:E", ["주차", "콘텐츠", "검색어", "클릭수", "노출수"]),
+    ("G", ["평균 순위"]),
 ]
 
 
@@ -177,6 +195,92 @@ def collect_week(client, property_id, start, end):
     return content_rows, channel_rows, seen_events
 
 
+# ── Search Console ───────────────────────────────────────────────────────────
+def pick_gsc_site(session):
+    res = session.get(f"{GSC_API}/sites", timeout=30)
+    res.raise_for_status()
+    sites = [s["siteUrl"] for s in res.json().get("siteEntry", [])
+             if s.get("permissionLevel") != "siteUnverifiedUser" and GSC_SITE_KEYWORD in s["siteUrl"]]
+    if not sites:
+        raise ValueError(f"로그인 계정에서 {GSC_SITE_KEYWORD} Search Console 속성을 찾지 못했습니다.")
+    return next((s for s in sites if s.startswith("sc-domain:")), sites[0])
+
+
+def gsc_query(session, site, start, end, dimension, url_regex):
+    rows, offset = [], 0
+    while True:
+        res = session.post(
+            f"{GSC_API}/sites/{quote(site, safe='')}/searchAnalytics/query",
+            json={
+                "startDate": start.isoformat(), "endDate": end.isoformat(),
+                "dimensions": [dimension], "type": "web", "rowLimit": 25000, "startRow": offset,
+                "dimensionFilterGroups": [{"filters": [{
+                    "dimension": "page", "operator": "includingRegex", "expression": url_regex,
+                }]}],
+            },
+            timeout=60,
+        )
+        res.raise_for_status()
+        batch = res.json().get("rows", [])
+        rows += batch
+        offset += len(batch)
+        if len(batch) < 25000:
+            return rows
+
+
+def collect_gsc_week(session, site, week, top_n):
+    """({콘텐츠: 요약}, [검색어 행], [URL 행]) 반환. 합계는 익명 검색어가 포함되는 page 기준"""
+    start, end = week_range(week)
+    label = week_label(week)
+    summary, queries, pages = {}, [], []
+    for seq, name in CONTENTS.items():
+        url = URL_REGEX.format(seq=seq)
+        page_rows = gsc_query(session, site, start, end, "page", url)
+        impressions = sum(r["impressions"] for r in page_rows)
+        clicks = sum(r["clicks"] for r in page_rows)
+        # 평균 순위는 노출수 가중 평균
+        position = sum(r["position"] * r["impressions"] for r in page_rows) / impressions if impressions else 0
+        summary[name] = {"노출수": impressions, "클릭수": clicks, "평균 순위": round(position, 2)}
+        pages += [{"주차": label, "콘텐츠": name, "URL": r["keys"][0], "노출수": r["impressions"],
+                   "클릭수": r["clicks"]} for r in page_rows]
+
+        query_rows = gsc_query(session, site, start, end, "query", url)
+        query_rows.sort(key=lambda r: (-r["clicks"], -r["impressions"]))
+        queries += [{"주차": label, "콘텐츠": name, "검색어": r["keys"][0], "클릭수": r["clicks"],
+                     "노출수": r["impressions"], "평균 순위": round(r["position"], 2)}
+                    for r in query_rows[:top_n]]
+    return summary, queries, pages
+
+
+def gsc_frames(gsc):
+    """gsc: {주차번호: (summary, queries, pages)}"""
+    summary, queries, pages = [], [], []
+    for i in sorted(gsc):
+        s, q, p = gsc[i]
+        summary += [{"주차": week_label(i), "콘텐츠": name, **s[name]} for name in CONTENTS.values()]
+        queries += q
+        pages += p
+    return (pd.DataFrame(summary, columns=["주차", "콘텐츠"] + GSC_SUMMARY_COLS),
+            pd.DataFrame(queries, columns=GSC_QUERY_COLS),
+            pd.DataFrame(pages, columns=["주차", "콘텐츠", "URL", "노출수", "클릭수"]))
+
+
+def gsc_error_message(e):
+    response = getattr(e, "response", None)
+    if response is None:
+        return f"Search Console 조회 실패: {e}"
+    try:
+        detail = response.json()["error"]["message"]
+    except (ValueError, KeyError, TypeError):
+        detail = response.text[:200]
+    lowered = detail.lower()
+    if "insufficient" in lowered and "scope" in lowered:
+        return "Search Console 권한이 없습니다. GA4 API 연동 탭에서 로그아웃 후 다시 로그인해주세요."
+    if "has not been used" in lowered or "is disabled" in lowered:
+        return "Google Cloud 프로젝트에서 Google Search Console API를 사용 설정해주세요."
+    return f"Search Console 조회 실패 ({response.status_code}): {detail}"
+
+
 # ── 주차 ─────────────────────────────────────────────────────────────────────
 def week_range(i):
     s = WEEK1_START + dt.timedelta(days=7 * (i - 1))
@@ -207,6 +311,8 @@ def to_frames(results):
 
 
 def _copy_value(col, v):
+    if isinstance(v, str):
+        return " ".join(v.split())
     if v is None or pd.isna(v):
         return ""
     if col == "평균 참여율":
@@ -235,6 +341,8 @@ def new_cell(col, row, attrs, value):
     s = f' s="{style.group(1)}"' if style else ""
     if value is None:
         return f'<c r="{col}{row}"{s}/>'
+    if isinstance(value, str):
+        return f'<c r="{col}{row}"{s} t="inlineStr"><is><t xml:space="preserve">{escape(value)}</t></is></c>'
     v = int(value) if float(value).is_integer() else round(float(value), 6)
     return f'<c r="{col}{row}"{s}><v>{v}</v></c>'
 
@@ -295,6 +403,25 @@ class Workbook:
         rm = next(m for m in ROW_RE.finditer(xml) if m.group(1) == "1")
         return {self._cell_text(cm.group(3), cm.group(4)): cm.group(1) for cm in CELL_RE.finditer(rm.group(3) or "")}
 
+    def read_cells(self, sheet, cols, first, last):
+        xml = self.files[self.sheet_paths[sheet]].decode("utf-8")
+        out = []
+        for rm in ROW_RE.finditer(xml):
+            if first <= int(rm.group(1)) <= last:
+                vals = {cm.group(1): self._cell_text(cm.group(3), cm.group(4))
+                        for cm in CELL_RE.finditer(rm.group(3) or "") if cm.group(1) in cols}
+                if any(vals.values()):
+                    out.append([vals.get(c, "") for c in cols])
+        return out
+
+    def table_last_row(self, table):
+        for n, data in self.files.items():
+            if n.startswith("xl/tables/") and n.endswith(".xml"):
+                xml = data.decode("utf-8")
+                if re.search(rf'<table\b[^>]*\bname="{table}"', xml):
+                    return int(re.search(r'\bref="[A-Z]+\d+:[A-Z]+(\d+)"', xml).group(1))
+        raise ValueError(f"엑셀에서 표를 못 찾음: {table}")
+
     def write_numbers(self, sheet, values):
         path = self.sheet_paths[sheet]
         xml = self.files[path].decode("utf-8")
@@ -341,8 +468,57 @@ class Workbook:
         return out.getvalue()
 
 
-def fill_report(xlsx: bytes, results) -> tuple[bytes, list[str]]:
-    """조회한 주차의 GA4 칸만 채운 엑셀 bytes와 경고 목록 반환 (GSC 칸은 유지)"""
+def _fill_gsc(wb, gsc, rows_c, hc, warnings):
+    if SHEET_GSC not in wb.sheet_paths:
+        raise ValueError(f"엑셀에서 시트를 못 찾음: {SHEET_GSC}")
+    hg = wb.header(SHEET_GSC)
+    missing = [c for c in GSC_SUMMARY_COLS if c not in hc] + [c for c in GSC_QUERY_COLS if c not in hg]
+    if missing:
+        raise ValueError(f"엑셀에서 GSC 헤더를 못 찾음: {missing}")
+
+    out_c, refreshed, new_rows = {}, set(), []
+    for i, (summary, queries, _) in gsc.items():
+        label = week_label(i)
+        for name, vals in summary.items():
+            refreshed.add((label, name))
+            r = rows_c.get((label, name))
+            if not r:
+                warnings.append(f"'{SHEET_CONTENT}'에 행 없음: {label} / {name}")
+                continue
+            for col in GSC_SUMMARY_COLS:
+                out_c[(r, hc[col])] = vals[col]
+        new_rows += [[q[c] for c in GSC_QUERY_COLS] for q in queries]
+    wb.write_numbers(SHEET_CONTENT, out_c)
+
+    def num(v):
+        try:
+            return float(v)
+        except ValueError:
+            return None
+
+    letters = [hg[c] for c in GSC_QUERY_COLS]
+    last = wb.table_last_row(GSC_TABLE)
+    kept = [[a, b, q, num(cl), num(im), num(po)] for a, b, q, cl, im, po in wb.read_cells(SHEET_GSC, letters, 2, last)
+            if (a, b) not in refreshed]
+    order = {n: k for k, n in enumerate(CONTENTS.values())}
+    merged = sorted(kept + new_rows, key=lambda x: (x[0], order.get(x[1], len(order))))
+
+    capacity = last - 1
+    if len(merged) > capacity:
+        warnings.append(f"'{SHEET_GSC}' 표는 {capacity}행까지라 {len(merged) - capacity}행이 입력되지 않았습니다. "
+                        "콘텐츠별 검색어 수를 줄여주세요.")
+        merged = merged[:capacity]
+
+    out_g = {}
+    for k in range(capacity):
+        row = merged[k] if k < len(merged) else [None] * len(letters)
+        for col, v in zip(letters, row):
+            out_g[(k + 2, col)] = v if v != "" else None
+    wb.write_numbers(SHEET_GSC, out_g)
+
+
+def fill_report(xlsx: bytes, results, gsc=None) -> tuple[bytes, list[str]]:
+    """조회한 주차의 GA4·GSC 칸을 채운 엑셀 bytes와 경고 목록 반환"""
     wb = Workbook(xlsx)
     missing_sheets = [s for s in (SHEET_CONTENT, SHEET_CHANNEL) if s not in wb.sheet_paths]
     if missing_sheets:
@@ -374,4 +550,6 @@ def fill_report(xlsx: bytes, results) -> tuple[bytes, list[str]]:
 
     wb.write_numbers(SHEET_CONTENT, out_c)
     wb.write_numbers(SHEET_CHANNEL, out_h)
+    if gsc:
+        _fill_gsc(wb, gsc, rows_c, hc, warnings)
     return wb.to_bytes(), warnings

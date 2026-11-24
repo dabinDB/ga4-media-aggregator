@@ -884,7 +884,8 @@ def run_streamlit():
                 token_result = oauth2.authorize_button(
                     name="🔑 Google 계정으로 로그인",
                     redirect_uri=st.secrets.get("REDIRECT_URI", "http://localhost:8501"),
-                    scope="https://www.googleapis.com/auth/analytics.readonly",
+                    scope=("https://www.googleapis.com/auth/analytics.readonly "
+                           "https://www.googleapis.com/auth/webmasters.readonly"),
                     extras_params={"access_type": "offline", "prompt": "consent"},
                     key="google_oauth", use_container_width=False,
                 )
@@ -1055,10 +1056,11 @@ def render_content_tab(st):
     import datetime
     import content_report as cr
     from google.analytics.data_v1beta import BetaAnalyticsDataClient
+    from google.auth.transport.requests import AuthorizedSession
     from google.oauth2.credentials import Credentials as OAuthCredentials
 
-    st.caption("주차별·콘텐츠별 GA4 성과를 조회하고 주간 리포트 엑셀의 "
-               "'콘텐츠별 성과'·'채널별 전환' 시트를 채웁니다. GSC 칸은 수동 입력을 그대로 유지합니다.")
+    st.caption("주차별·콘텐츠별 GA4·Search Console 성과를 조회하고 주간 리포트 엑셀의 "
+               "'콘텐츠별 성과'·'채널별 전환'·'GSC 검색어' 시트를 채웁니다.")
 
     token = st.session_state.get("oauth_token") or {}
     if not token.get("access_token"):
@@ -1074,14 +1076,29 @@ def render_content_tab(st):
     with col_w:
         weeks = st.multiselect("주차 (기본: 끝난 주차 전부)", all_weeks, default=cr.finished_weeks(today),
                                format_func=cr.week_label, key="content_weeks")
+    col_s, col_n = st.columns([2, 1])
+    with col_s:
+        gsc_site = st.text_input("Search Console 속성 (비우면 자동 선택)", key="content_gsc_site",
+                                 placeholder="예: sc-domain:ktmmobile.com")
+    with col_n:
+        top_n = st.number_input("콘텐츠·주차별 검색어 수", min_value=1, max_value=100, value=4,
+                                key="content_gsc_top", help="GSC 검색어 표는 100행까지입니다. 8주×3콘텐츠 기준 4개까지 들어갑니다.")
+
+    if "webmasters" not in str(token.get("scope", "webmasters")):
+        st.info("Search Console 권한이 없는 로그인입니다. GA4 API 연동 탭에서 로그아웃 후 다시 로그인해주세요.")
 
     unfinished = [cr.week_label(i) for i in weeks if cr.week_range(i)[1] >= today]
     if unfinished:
         st.warning(f"아직 안 끝난 주차는 부분 데이터입니다: {', '.join(unfinished)}")
+    gsc_pending = [cr.week_label(i) for i in weeks
+                   if today > cr.week_range(i)[1] and (today - cr.week_range(i)[1]).days < cr.GSC_DELAY_DAYS]
+    if gsc_pending:
+        st.warning(f"Search Console은 2~3일 늦게 확정되어 값이 달라질 수 있습니다: {', '.join(gsc_pending)}")
 
     if st.button("📡 내재화컨텐츠 데이터 가져오기", type="primary",
                  disabled=not (weeks and property_id), key="content_fetch_btn"):
-        st.session_state.pop("content_results", None)
+        for k in ("content_results", "content_gsc", "content_gsc_error", "content_gsc_site_used"):
+            st.session_state.pop(k, None)
         try:
             creds = OAuthCredentials(
                 token=token["access_token"], refresh_token=token.get("refresh_token"),
@@ -1098,9 +1115,22 @@ def render_content_tab(st):
                 cdata, hdata, seen = cr.collect_week(client, str(property_id).strip(), s, e)
                 results[i] = (cdata, hdata)
                 events |= seen
-            progress.empty()
             st.session_state["content_results"] = results
             st.session_state["content_events"] = sorted(events)
+
+            # GSC 실패해도 GA4 결과는 유지
+            try:
+                session = AuthorizedSession(creds)
+                site = gsc_site.strip() or cr.pick_gsc_site(session)
+                gsc = {}
+                for n, i in enumerate(sorted(weeks), 1):
+                    progress.progress((n - 1) / len(weeks), text=f"{cr.week_label(i)} Search Console 조회 중…")
+                    gsc[i] = cr.collect_gsc_week(session, site, i, int(top_n))
+                st.session_state["content_gsc"] = gsc
+                st.session_state["content_gsc_site_used"] = site
+            except Exception as gsc_err:
+                st.session_state["content_gsc_error"] = cr.gsc_error_message(gsc_err)
+            progress.empty()
         except Exception as e:
             err = str(e)
             if "401" in err or "credentials" in err.lower():
@@ -1128,12 +1158,30 @@ def render_content_tab(st):
     with st.expander("집계한 가입 이벤트"):
         st.write(", ".join(st.session_state.get("content_events", [])) or "(없음)")
 
+    gsc = st.session_state.get("content_gsc")
+    if st.session_state.get("content_gsc_error"):
+        st.error(st.session_state["content_gsc_error"])
+    if gsc:
+        gsc_summary, gsc_queries, gsc_pages = cr.gsc_frames(gsc)
+        st.subheader("Search Console 콘텐츠별")
+        st.caption(f"속성: {st.session_state.get('content_gsc_site_used', '')} · 평균 순위는 노출수 가중 평균")
+        if gsc_pages.empty:
+            st.warning("콘텐츠 URL에 잡힌 데이터가 없습니다. Search Console의 대표 URL(canonical)이 "
+                       "파라미터 없는 주소로 묶였는지 확인해주세요.")
+        st.dataframe(gsc_summary, use_container_width=True, hide_index=True)
+        copy_blocks_buttons(gsc_summary, cr.GSC_CONTENT_COPY_BLOCKS, cr.block_tsv)
+        st.subheader("Search Console 검색어")
+        st.dataframe(gsc_queries, use_container_width=True, hide_index=True)
+        copy_blocks_buttons(gsc_queries, cr.GSC_QUERY_COPY_BLOCKS, cr.block_tsv)
+        with st.expander("집계된 Search Console URL"):
+            st.dataframe(gsc_pages, use_container_width=True, hide_index=True)
+
     st.divider()
     st.subheader("리포트 엑셀에 입력")
     uploaded = st.file_uploader("KT M모바일_내재화컨텐츠_주간리포트.xlsx 업로드", type=["xlsx"], key="content_xlsx")
     if uploaded:
         try:
-            filled, warnings = cr.fill_report(uploaded.getvalue(), results)
+            filled, warnings = cr.fill_report(uploaded.getvalue(), results, gsc)
         except Exception as e:
             st.error(str(e))
             return
