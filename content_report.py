@@ -144,8 +144,8 @@ def collect_week(client, property_id, start, end):
         c["사용자"] = p["totalUsers"]
         c["활성 사용자"] = p["activeUsers"]
         c["페이지뷰 수"] = p["screenPageViews"]
-        c["평균 참여율"] = p["engagedSessions"] / p["sessions"] if p["sessions"] else None
-        c["평균 참여시간(초)"] = round(p["userEngagementDuration"] / p["activeUsers"], 1) if p["activeUsers"] else None
+        c["평균 참여율"] = p["engagedSessions"] / p["sessions"] if p["sessions"] else 0
+        c["평균 참여시간(초)"] = round(p["userEngagementDuration"] / p["activeUsers"], 1) if p["activeUsers"] else 0
         for ai_name in ("ChatGPT", "Perplexity", "Gemini", "기타 AI"):
             c[ai_name] = 0
 
@@ -167,7 +167,7 @@ def collect_week(client, property_id, start, end):
             c[col] += n
             channel_rows.setdefault((name, channel_bucket(r["sessionDefaultChannelGroup"])), defaultdict(float))[col] += n
 
-        content_rows[name] = c
+        content_rows[name] = {col: c[col] for col in CONTENT_COLS}
 
     for name in CONTENTS.values():
         for ch in CHANNELS + [OTHER_CHANNEL]:
