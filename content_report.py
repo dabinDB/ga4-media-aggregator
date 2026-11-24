@@ -20,10 +20,20 @@ CONTENTS = {
 }
 URL_REGEX = r"tips\.do\?(.*&)?ntcartSeq={seq}(&.*)?$"
 
-EVENT_CONTAINS = "가입신청서_작성_"
-START_KEY, DONE_KEY = "작성_시작", "작성_완료"
-EVENT_EXCLUDE = ("유심_배송",)
-CONVERSION_METRIC = "eventCount"
+START_EVENTS = [
+    "esim_가입신청서_작성_시작__pc_공통_",
+    "가입신청서_작성_시작__pc_공통_",
+    "가입신청서_작성_시작__mo_공통_",
+    "esim_가입신청서_작성_시작__mo_공통_",
+]
+COMPLETE_EVENTS = [
+    "가입신청서_작성_완료__mo_공통_",
+    "가입신청서_작성_완료__pc_공통_",
+    "esim_가입신청서_작성_완료__mo_공통_",
+    "esim_가입신청서_작성_완료__pc_공통_",
+]
+TARGET_EVENTS = START_EVENTS + COMPLETE_EVENTS
+CONVERSION_METRIC = "keyEvents"
 
 AI_SOURCES = [
     ("ChatGPT", r"chatgpt|openai"),
@@ -57,13 +67,18 @@ CHANNEL_COPY_BLOCKS = [
 
 
 # ── GA4 ──────────────────────────────────────────────────────────────────────
-def _filter(field, regex=None, contains=None):
+def _filter(field, regex):
     from google.analytics.data_v1beta.types import Filter, FilterExpression
-    if regex is not None:
-        sf = Filter.StringFilter(match_type=Filter.StringFilter.MatchType.PARTIAL_REGEXP, value=regex)
-    else:
-        sf = Filter.StringFilter(match_type=Filter.StringFilter.MatchType.CONTAINS, value=contains)
+    sf = Filter.StringFilter(match_type=Filter.StringFilter.MatchType.PARTIAL_REGEXP, value=regex)
     return FilterExpression(filter=Filter(field_name=field, string_filter=sf))
+
+
+def _in_list(field, values):
+    from google.analytics.data_v1beta.types import Filter, FilterExpression
+    return FilterExpression(filter=Filter(
+        field_name=field,
+        in_list_filter=Filter.InListFilter(values=values, case_sensitive=True),
+    ))
 
 
 def _and(*exprs):
@@ -113,15 +128,15 @@ def collect_week(client, property_id, start, end):
         page = run(client, property_id, start, end, [],
                    ["sessions", "engagedSessions", "totalUsers", "activeUsers", "screenPageViews",
                     "userEngagementDuration"],
-                   _filter("pagePathPlusQueryString", regex=url))
+                   _filter("pagePathPlusQueryString", url))
         p = page[0] if page else defaultdict(float)
 
         land = run(client, property_id, start, end, ["sessionDefaultChannelGroup", "sessionSource"], ["sessions"],
-                   _filter("landingPagePlusQueryString", regex=url))
+                   _filter("landingPagePlusQueryString", url))
 
         ev = run(client, property_id, start, end, ["sessionDefaultChannelGroup", "eventName"], [CONVERSION_METRIC],
-                 _and(_filter("landingPagePlusQueryString", regex=url),
-                      _filter("eventName", contains=EVENT_CONTAINS)))
+                 _and(_filter("landingPagePlusQueryString", url),
+                      _in_list("eventName", TARGET_EVENTS)))
 
         c = defaultdict(float)
         c["세션"] = p["sessions"]
@@ -146,11 +161,7 @@ def collect_week(client, property_id, start, end):
 
         for r in ev:
             en = r["eventName"]
-            if any(x in en for x in EVENT_EXCLUDE):
-                continue
-            col = "가입시작" if START_KEY in en else "가입완료" if DONE_KEY in en else None
-            if not col:
-                continue
+            col = "가입시작" if en in START_EVENTS else "가입완료"
             seen_events.add(en)
             n = r[CONVERSION_METRIC]
             c[col] += n

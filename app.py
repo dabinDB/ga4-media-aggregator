@@ -9,6 +9,8 @@ from io import BytesIO
 
 import pandas as pd
 
+from content_report import COMPLETE_EVENTS, START_EVENTS, TARGET_EVENTS
+
 
 # ── 상수 ─────────────────────────────────────────────────────────────────────
 EXCLUDE_SOURCE_MEDIUM_KEYWORDS = ["brandsearch", "newproduct"]
@@ -16,20 +18,6 @@ EXCLUDE_SOURCE_MEDIUM_KEYWORDS = ["brandsearch", "newproduct"]
 BASE_COLS = ["세션 기본 채널 그룹", "세션 소스/매체"]
 EVENT_COL = "이벤트 이름"
 
-# 집계 대상 이벤트 (정확히 일치)
-START_EVENTS = [
-    "esim_가입신청서_작성_시작__pc_공통_",
-    "가입신청서_작성_시작__pc_공통_",
-    "가입신청서_작성_시작__mo_공통_",
-    "esim_가입신청서_작성_시작__mo_공통_",
-]
-COMPLETE_EVENTS = [
-    "가입신청서_작성_완료__mo_공통_",
-    "가입신청서_작성_완료__pc_공통_",
-    "esim_가입신청서_작성_완료__mo_공통_",
-    "esim_가입신청서_작성_완료__pc_공통_",
-]
-TARGET_EVENTS = START_EVENTS + COMPLETE_EVENTS
 
 # ── 1차 구분 분류 상수 ─────────────────────────────────────────────────────
 AI_GEO_SOURCES = [
